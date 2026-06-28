@@ -1,26 +1,23 @@
-import streamlit as st
 import requests
 import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 from urllib.parse import quote, unquote, urlparse
 import re
 
-def is_valid_news_title(title: str, search_query: str = "") -> bool:
-    if not title or len(title) < 15: return False
+def is_valid_news_title(title: str) -> bool:
+    """ตัวกรองเว็บขยะ (เวอร์ชันผ่อนปรน ไม่สกัดกั้นข่าวจริง)"""
+    if not title or len(title) < 10: return False # ลดเงื่อนไขความยาวลง
     if not re.search(r'[ก-๙]', title): return False
-    trash_keywords = ['หน้าแรก', 'เข้าสู่ระบบ', 'สมัครสมาชิก', 'หมวดหมู่', 'tag', 'archive', 'ค้นหา', 'ติดต่อเรา', 'เกี่ยวกับเรา', 'นโยบายความเป็นส่วนตัว']
+    
+    # กรองเฉพาะหน้าเว็บที่ไม่ใช่ข่าวจริงๆ ทิ้ง
+    trash_keywords = ['หน้าแรก', 'เข้าสู่ระบบ', 'สมัครสมาชิก', 'หมวดหมู่', 'tag', 'archive', 'ค้นหา', 'ติดต่อเรา', 'เกี่ยวกับเรา', 'นโยบายความเป็นส่วนตัว', 'กระทู้', 'เว็บบอร์ด']
     if any(trash in title.lower() for trash in trash_keywords): return False
-    if search_query:
-        query_words = [w.strip() for w in search_query.split() if len(w.strip()) > 1]
-        if query_words:
-            match_count = sum(1 for w in query_words if w.lower() in title.lower())
-            if len(query_words) >= 3 and match_count < 2: return False
-            elif len(query_words) < 3 and match_count < 1: return False
+    
     return True
 
-@st.cache_data(ttl=3600, show_spinner=False)
+# ลบ st.cache_data ออกชั่วคราวตอนทดสอบระบบ จะได้เห็นผลลัพธ์ใหม่ตลอด
 def search_news_references(query: str, num_results: int = 5) -> list:
-    """ระบบรวมพลัง 3 เครื่องยนต์ พร้อมระบบ Caching จดจำผลลัพธ์"""
+    """ระบบรวมพลัง 3 เครื่องยนต์"""
     if not query.strip(): return []
     results = []
     urls_seen = set()
@@ -50,7 +47,8 @@ def search_news_references(query: str, num_results: int = 5) -> list:
             for item in root.findall('.//item'):
                 title = item.find('title').text if item.find('title') is not None else ""
                 link = item.find('link').text if item.find('link') is not None else ""
-                if is_valid_news_title(title, query) and link not in urls_seen:
+                # ส่งแค่ title ไปเช็ค ไม่ต้องส่ง query ไปบังคับ Exact Match แล้ว
+                if is_valid_news_title(title) and link not in urls_seen:
                     results.append({'title': title, 'href': link, 'body': "Google News"})
                     urls_seen.add(link)
                     if len(results) >= num_results: return results
@@ -74,7 +72,7 @@ def search_news_references(query: str, num_results: int = 5) -> list:
                         link = unquote(link.split("uddg=")[1].split("&")[0])
                     if not link or link in urls_seen or not title: continue
                     domain = urlparse(link.lower()).netloc.replace('www.', '')
-                    if any(wd in domain for wd in whitelist) and is_valid_news_title(title, query):
+                    if any(wd in domain for wd in whitelist) and is_valid_news_title(title):
                         results.append({'title': title, 'href': link, 'body': "DuckDuckGo"})
                         urls_seen.add(link)
                         if len(results) >= num_results: return results
@@ -94,7 +92,7 @@ def search_news_references(query: str, num_results: int = 5) -> list:
                     title = a_tag.text
                     if not link or link in urls_seen: continue
                     domain = urlparse(link.lower()).netloc.replace('www.', '')
-                    if any(wd in domain for wd in whitelist) and is_valid_news_title(title, query):
+                    if any(wd in domain for wd in whitelist) and is_valid_news_title(title):
                         results.append({'title': title, 'href': link, 'body': "Bing Search"})
                         urls_seen.add(link)
                         if len(results) >= num_results: return results
