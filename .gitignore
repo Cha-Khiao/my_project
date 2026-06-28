@@ -1,0 +1,16 @@
+# ไฟล์ความลับและ API Keys
+.env
+
+# โฟลเดอร์ระบบของ Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# โฟลเดอร์ Virtual Environment (ถ้ามี)
+venv/
+env/
+.venv/
+
+# ไฟล์ระบบของ OS
+.DS_Store
+Thumbs.db
