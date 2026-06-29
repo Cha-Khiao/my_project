@@ -6,7 +6,7 @@ import os
 import csv
 from scraper import extract_text_from_url
 from search import search_news_references
-from llm import analyze_news_with_qwen, generate_search_keywords
+from llm import analyze_news_with_qwen, generate_search_keywords, classify_content
 
 # ================= ตั้งค่าหน้าเพจ & ซ่อนเมนู Streamlit =================
 st.set_page_config(page_title="Fact-Check AI", page_icon="🕵️‍♂️", layout="centered", initial_sidebar_state="expanded")
@@ -18,7 +18,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# ================= ฟังก์ชันสำหรับจัดการ Log & สถิติ =================
+# ================= ฟังก์ชันสำหรับจัดการ Log =================
 def save_system_log(input_type, input_data, search_query, references, ai_result, process_time):
     filename = "thesis_system_logs.csv"
     file_exists = os.path.isfile(filename)
@@ -32,7 +32,7 @@ def save_system_log(input_type, input_data, search_query, references, ai_result,
     except Exception:
         score = "Error Parsing"
     short_input = input_data[:100].replace('\n', ' ') + "..." if len(input_data) > 100 else input_data.replace('\n', ' ')
-    ref_details = " | ".join([f"{idx+1}. {r['title']} ({r['href']})" for idx, r in enumerate(references)]) if references else "ไม่พบแหล่งอ้างอิงบนอินเทอร์เน็ต"
+    ref_details = " | ".join([f"{idx+1}. {r['title']} ({r['href']})" for idx, r in enumerate(references)]) if references else "ไม่พบอ้างอิงสืบค้น"
     with open(filename, mode='a', encoding='utf-8-sig', newline='') as f:
         writer = csv.writer(f)
         if not file_exists:
@@ -56,21 +56,17 @@ def get_system_stats():
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/2921/2921222.png", width=100)
     st.title("News Fact-Checker")
-    st.markdown("ระบบวิเคราะห์ความน่าเชื่อถือของข่าวด้วย **AI (Qwen-2.5)** ผสานระบบสืบค้น **3 เครื่องยนต์อัตโนมัติ**")
-    
+    st.markdown("ระบบวิเคราะห์ความน่าเชื่อถือของข่าวด้วย **AI (Qwen-2.5)**")
     st.divider()
     st.subheader("📊 สถิติระบบ (Live)")
     total, fake = get_system_stats()
     col1, col2 = st.columns(2)
     col1.metric("ตรวจสอบแล้ว", f"{total} ครั้ง")
     col2.metric("พบข่าวปลอม", f"{fake} ข่าว")
-    
-    st.divider()
-    st.markdown("👨‍💻 **พัฒนาโดย:** [ชื่อของคุณ]\n\n🎓 โครงงานวิจัยมหาวิทยาลัย")
 
 # ================= ส่วนหน้าเว็บแอปพลิเคชันหลัก =================
 st.title("🕵️‍♂️ ตรวจสอบความจริงข่าวออนไลน์")
-st.markdown("วางลิงก์ข่าวหรือข้อความที่น่าสงสัย เพื่อให้ระบบ AI และสถาปัตยกรรม Aggregated Search ช่วยวิเคราะห์ข้อเท็จจริง")
+st.markdown("วางลิงก์ข่าวหรือข้อความที่น่าสงสัย เพื่อให้ระบบ AI ช่วยวิเคราะห์ข้อเท็จจริง")
 
 tab1, tab2 = st.tabs(["🔗 ตรวจสอบจากลิงก์ (URL)", "📝 วางข้อความโดยตรง"])
 
@@ -98,7 +94,7 @@ with tab1:
             st.warning("กรุณาใส่ URL ก่อนครับ")
 
 with tab2:
-    text_input = st.text_area("📝 วางเนื้อหาข่าว แคปชั่น หรือข้อความที่ส่งต่อกันมา:", height=150, placeholder="พิมพ์หรือวางข้อความที่นี่...")
+    text_input = st.text_area("📝 วางเนื้อหาข่าว แคปชั่น หรือข้อความที่ส่งต่อกันมา:", height=150)
     if st.button("🔍 เริ่มวิเคราะห์จากข้อความ", type="primary", use_container_width=True):
         if text_input.strip():
             input_method_used = "Direct Text"
@@ -107,37 +103,62 @@ with tab2:
         else:
             st.warning("กรุณาใส่เนื้อหาข่าวก่อนครับ")
 
-# ================= กระบวนการทำงานหลัก =================
+# ================= กระบวนการทำงานหลัก (Multi-Stage Pipeline + New Reference UI) =================
 if news_content:
     st.divider()
     start_process_time = time.time()
+    
+    news_content = re.sub(r'[\u4e00-\u9fff]+', '', news_content) 
+    if not re.search(r'[ก-๙]', news_content):
+        news_content = "เนื้อหาไม่มีภาษาไทยปะปนอยู่เลย ไม่สามารถประมวลผลได้"
     
     months_th = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."]
     now = datetime.datetime.now()
     current_date_str = f"{now.day} {months_th[now.month - 1]} {now.year + 543}"
     
-    with st.status("🚀 ระบบกำลังตรวจสอบข้อเท็จจริง กรุณารอสักครู่...", expanded=True) as status:
+    references = []
+    result = ""
+    search_query = ""
+    
+    with st.status("🚀 ระบบกำลังตรวจสอบข้อมูลในระบบท่อส่งสัญญาณ...", expanded=True) as status:
         
-        st.write("🧠 1. ให้ AI วิเคราะห์โครงสร้างประโยคและสกัดคีย์เวิร์ด...")
+        st.write("🧠 [ด่านที่ 1]: สแกนหาคำกล่าวอ้างเชิงข้อเท็จจริง...")
         text_for_keyword = news_content.split("]:\n")[-1] if "[เนื้อหาข่าวจริง" in news_content else news_content
         
-        # 📌 ให้ AI สกัดคำค้นหาเสมอ ไม่มีนโยบาย SKIP_SEARCH แล้ว
-        search_query = generate_search_keywords(text_for_keyword)
-        if not search_query: 
-            search_query = re.sub(r'http[s]?://\S+|\[.*?\]', '', text_for_keyword)[:60].strip()
+        result_type, extracted_reason = classify_content(text_for_keyword)
+        
+        if result_type == "DROP":
+            st.write(f"⏭️ [ผลการกรอง]: เนื้อหาไม่ใช่ข่าวสารสาธารณะ ยุติการทำงานเพื่อความรวดเร็ว (Fail-Fast)")
+            search_query = "SKIP_SEARCH"
+            result = f"""## 📌 1. สรุปประเด็นสำคัญ\n- ไม่พบโครงสร้างของ 'คำกล่าวอ้างที่ตรวจสอบได้'\n\n## 📊 2. การประเมินระดับความน่าเชื่อถือ\n**ระดับความน่าเชื่อถือ:** ⚪ N/A: ไม่ใช่ข่าวหรือข้อมูลที่ตรวจสอบได้\n\n**เหตุผลประกอบการประเมิน:** {extracted_reason}\n\n## 🔗 3. แหล่งอ้างอิง\n- **แหล่งอ้างอิงที่อ้างในข้อความต้นฉบับ:** ไม่ระบุ\n- **อ้างอิงจากการสืบค้น (สื่อหลัก):** ระบบยุติการสืบค้นอัตโนมัติ"""
+        
+        else:
+            st.write(f"🟢 [ผลการกรอง]: {extracted_reason} กำลังส่งต่อไปยังด่านสกัดคำค้นหา...")
+            search_query = generate_search_keywords(text_for_keyword)
+            if not search_query: search_query = re.sub(r'http[s]?://\S+|\[.*?\]', '', text_for_keyword)[:60].strip()
             
-        st.write("🌐 2. กำลังสืบค้นเปรียบเทียบข้อมูลจากคลังสื่อกระแสหลัก 40+ สำนัก...")
-        references = search_news_references(search_query, num_results=5)
+            st.write(f"🌐 [ด่านที่ 2]: กำลังสืบค้นข้อมูลจาก 40+ สื่อหลัก ด้วยคำค้นหา: `{search_query}`")
+            references = search_news_references(search_query, num_results=5)
+                
+            st.write("⚖️ [ด่านที่ 3]: ข้อมูลพร้อมแล้ว! กำลังวิเคราะห์เปรียบเทียบสถิติและข้อเท็จจริง...")
+            result = analyze_news_with_qwen(news_content, references, current_date_str)
             
-        st.write("⚖️ 3. ประมวลผลและสรุปความน่าเชื่อถือเชิงลึก...")
-        result = analyze_news_with_qwen(news_content, references, current_date_str)
+            # การดันแหล่งอ้างอิงเว็บเข้าไปรวมกับหัวข้อที่ 3 ตามที่คุณต้องการ
+            ref_markdown = "\n- **อ้างอิงจากการสืบค้น (สื่อหลัก):**"
+            if references:
+                for idx, r in enumerate(references):
+                    ref_markdown += f"\n   {idx+1}. [{r['title']}]({r['href']})"
+            else:
+                ref_markdown += " ไม่พบข้อมูลจากการสืบค้นบนอินเทอร์เน็ต"
+                
+            result += ref_markdown 
         
         end_process_time = time.time()
         total_time_taken = round(end_process_time - start_process_time, 2)
         
-        status.update(label=f"✅ ตรวจสอบเสร็จสิ้น! (ใช้เวลา {total_time_taken} วินาที)", state="complete", expanded=False)
+        status.update(label=f"✅ ประมวลผลเสร็จสิ้น! (ใช้เวลา {total_time_taken} วินาที)", state="complete", expanded=False)
     
-    # 📌 จัดการแสดงผลลัพธ์ (Dynamic Alert Box)
+    # ================= ส่วนจัดแต่งแสดงผลลัพธ์หน้าบ้าน =================
     st.subheader("📊 รายงานผลการประเมิน")
     
     if "ระดับ 5" in result or "ระดับ 4" in result or "🟢" in result or "🟡" in result:
@@ -152,17 +173,10 @@ if news_content:
     with st.container(border=True):
         st.markdown(result)
         
-    # 📌 ซ่อนคีย์เวิร์ดและแหล่งอ้างอิงไว้ใน Expander
-    with st.expander("📚 ดูแหล่งข่าวอ้างอิง และ ข้อมูลเชิงเทคนิค (คลิกเพื่อขยาย)"):
-        st.markdown(f"**🔑 คีย์เวิร์ดที่ AI ใช้สืบค้น:** `{search_query}`")
-        st.markdown("**🌐 แหล่งข่าวเปรียบเทียบจากสื่อหลัก:**")
-        if references:
-            for idx, r in enumerate(references):
-                st.write(f"{idx+1}. [{r['title']}]({r['href']}) *(จาก {r['body']})*")
-        else:
-            st.write("*ไม่พบแหล่งข่าวอ้างอิงที่สอดคล้องกันบนอินเทอร์เน็ต*")
+    # กล่อง Expander ตอนนี้เอาไว้ซ่อนแค่คีย์เวิร์ดอย่างเดียว เพื่อให้หน้าเว็บคลีนที่สุด
+    with st.expander("🔑 ข้อมูลเชิงเทคนิค (AI Search Query)"):
+        st.markdown(f"**คีย์เวิร์ดที่ AI ใช้สืบค้น:** `{search_query}`")
             
-    # บันทึก Log 
     try:
         log_input_data = original_url if original_url else news_content
         save_system_log(input_method_used, log_input_data, search_query, references, result, total_time_taken)
