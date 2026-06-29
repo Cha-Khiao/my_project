@@ -4,21 +4,36 @@ from bs4 import BeautifulSoup
 from urllib.parse import quote, unquote, urlparse
 import re
 
-def is_valid_news_title(title: str) -> bool:
-    """ตัวกรองเว็บขยะ (เวอร์ชันผ่อนปรน ไม่สกัดกั้นข่าวจริง)"""
-    if not title or len(title) < 10: return False # ลดเงื่อนไขความยาวลง
+def is_valid_news_title(title: str, query: str = "") -> bool:
+    """ตัวกรองอัจฉริยะ: ดักขยะ SEO Spam แบบยืดหยุ่น"""
+    if not title or len(title) < 10: return False
     if not re.search(r'[ก-๙]', title): return False
     
-    # กรองเฉพาะหน้าเว็บที่ไม่ใช่ข่าวจริงๆ ทิ้ง
-    trash_keywords = ['หน้าแรก', 'เข้าสู่ระบบ', 'สมัครสมาชิก', 'หมวดหมู่', 'tag', 'archive', 'ค้นหา', 'ติดต่อเรา', 'เกี่ยวกับเรา', 'นโยบายความเป็นส่วนตัว', 'กระทู้', 'เว็บบอร์ด']
-    if any(trash in title.lower() for trash in trash_keywords): return False
+    # 🛑 1. ขยะที่แบนถาวร (ไม่มีประโยชน์ในแง่ข่าวสารแน่นอน)
+    hard_trash = ['หน้าแรก', 'เข้าสู่ระบบ', 'สมัครสมาชิก', 'หมวดหมู่', 'tag', 'archive', 'คลิปหลุด', '18+']
+    if any(trash in title.lower() for trash in hard_trash): return False
     
+    # 🧠 2. Dynamic Spam Filter (บล็อกหวย/ดูดวง เฉพาะตอนที่เนื้อหาหลักไม่ได้เกี่ยวกับเรื่องพวกนี้)
+    dynamic_spam = ['หวย', 'เลขเด็ด', 'ดูดวง', 'ผลบอล', 'สลากกินแบ่ง']
+    
+    # ถ้าในพาดหัวมีคำว่าเลขเด็ด แต่ในคีย์เวิร์ด(query) ที่ AI คิดมาไม่มีคำว่าเลขเด็ดเลย -> แปลว่าเป็น SEO Spam ให้เตะทิ้ง!
+    if any(spam in title.lower() for spam in dynamic_spam):
+        if not query or not any(spam in query.lower() for spam in dynamic_spam):
+            return False 
+            
+    # 🎯 3. Soft-Relevance Check (ต้องมีคำหลักตรงกันบ้าง)
+    if query:
+        query_words = query.split()
+        core_words = [w for w in query_words if len(w) > 2]
+        if core_words:
+            match = any(word.lower() in title.lower() for word in core_words)
+            if not match: return False
+            
     return True
 
-# ลบ st.cache_data ออกชั่วคราวตอนทดสอบระบบ จะได้เห็นผลลัพธ์ใหม่ตลอด
 def search_news_references(query: str, num_results: int = 5) -> list:
-    """ระบบรวมพลัง 3 เครื่องยนต์"""
-    if not query.strip(): return []
+    """ระบบรวมพลัง 3 เครื่องยนต์ พร้อมด่านตรวจสกัดอัจฉริยะ"""
+    if not query.strip() or query == "SKIP_SEARCH": return []
     results = []
     urls_seen = set()
     whitelist = [
@@ -47,8 +62,7 @@ def search_news_references(query: str, num_results: int = 5) -> list:
             for item in root.findall('.//item'):
                 title = item.find('title').text if item.find('title') is not None else ""
                 link = item.find('link').text if item.find('link') is not None else ""
-                # ส่งแค่ title ไปเช็ค ไม่ต้องส่ง query ไปบังคับ Exact Match แล้ว
-                if is_valid_news_title(title) and link not in urls_seen:
+                if is_valid_news_title(title, query) and link not in urls_seen:
                     results.append({'title': title, 'href': link, 'body': "Google News"})
                     urls_seen.add(link)
                     if len(results) >= num_results: return results
@@ -72,7 +86,7 @@ def search_news_references(query: str, num_results: int = 5) -> list:
                         link = unquote(link.split("uddg=")[1].split("&")[0])
                     if not link or link in urls_seen or not title: continue
                     domain = urlparse(link.lower()).netloc.replace('www.', '')
-                    if any(wd in domain for wd in whitelist) and is_valid_news_title(title):
+                    if any(wd in domain for wd in whitelist) and is_valid_news_title(title, query):
                         results.append({'title': title, 'href': link, 'body': "DuckDuckGo"})
                         urls_seen.add(link)
                         if len(results) >= num_results: return results
@@ -92,7 +106,7 @@ def search_news_references(query: str, num_results: int = 5) -> list:
                     title = a_tag.text
                     if not link or link in urls_seen: continue
                     domain = urlparse(link.lower()).netloc.replace('www.', '')
-                    if any(wd in domain for wd in whitelist) and is_valid_news_title(title):
+                    if any(wd in domain for wd in whitelist) and is_valid_news_title(title, query):
                         results.append({'title': title, 'href': link, 'body': "Bing Search"})
                         urls_seen.add(link)
                         if len(results) >= num_results: return results
