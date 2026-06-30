@@ -8,6 +8,38 @@ from scraper import extract_text_from_url
 from search import search_news_references
 from llm import analyze_news_with_qwen, generate_search_keywords, classify_content
 
+# ================= ฟังก์ชัน Caching ที่ปรับปรุงไม่ให้จำ Error =================
+@st.cache_data(ttl=3600, show_spinner=False)
+def cached_extract_text(url):
+    result = extract_text_from_url(url)
+    
+    # ถ้าดึงมาแล้วเป็น dict และมีคำว่า error (เช่น 500 Internal Server Error)
+    if isinstance(result, dict) and "error" in result:
+        # ใช้ raise Exception เพื่อบังคับให้ Streamlit "ไม่จำ" ค่านี้ลง Cache
+        raise Exception(result["error"])
+        
+    # ถ้าดึงมาแล้วได้เป็น string ธรรมดา แต่มีข้อความ Error โผล่มา
+    if isinstance(result, str) and ("500 Internal Server Error" in result or "Error" in result):
+        raise Exception(result)
+        
+    return result
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def cached_classify(text):
+    return classify_content(text)
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def cached_generate_keywords(text):
+    return generate_search_keywords(text)
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def cached_search(query):
+    return search_news_references(query, num_results=5)
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def cached_analyze(news_text, references, current_date):
+    return analyze_news_with_qwen(news_text, references, current_date)
+
 # ================= ตั้งค่าหน้าเพจ & ซ่อนเมนู Streamlit =================
 st.set_page_config(page_title="Fact-Check AI", page_icon="🕵️‍♂️", layout="centered", initial_sidebar_state="expanded")
 st.markdown("""
@@ -57,6 +89,14 @@ with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/2921/2921222.png", width=100)
     st.title("News Fact-Checker")
     st.markdown("ระบบวิเคราะห์ความน่าเชื่อถือของข่าวด้วย **AI (Qwen-2.5)**")
+    
+    st.divider()
+    
+    # ปุ่มลับสำหรับ Dev ไว้กดเคลียร์แคชเวลามีปัญหา
+    if st.button("🗑️ ล้างหน่วยความจำ (Clear Cache)", use_container_width=True):
+        st.cache_data.clear()
+        st.success("✅ ล้างข้อมูลที่จำไว้เรียบร้อย! ลองกดค้นหาใหม่อีกครั้งครับ")
+        
     st.divider()
     st.subheader("📊 สถิติระบบ (Live)")
     total, fake = get_system_stats()
@@ -81,15 +121,19 @@ with tab1:
         if url_input:
             input_method_used = "URL Link"
             with st.spinner("⏳ กำลังสกัดเนื้อหาข้อมูล..."):
-                extracted_data = extract_text_from_url(url_input)
-                if isinstance(extracted_data, dict):
-                    if "error" in extracted_data: st.error(extracted_data["error"])
-                    else:
+                try:
+                    # ดึงข้อมูลผ่าน Cache ที่มีระบบดีด Error ทิ้ง
+                    extracted_data = cached_extract_text(url_input)
+                    if isinstance(extracted_data, dict):
                         news_content = extracted_data.get("content", "")
                         original_url = extracted_data.get("actual_url", url_input)
-                else:
-                    news_content = extracted_data
-                    original_url = url_input 
+                    else:
+                        news_content = extracted_data
+                        original_url = url_input 
+                except Exception as e:
+                    # ถ้าระบบโยน Error ออกมา จะมาเข้าตรงนี้แทน และหยุดการทำงานขั้นถัดไป
+                    st.error(f"❌ ระบบไม่สามารถดึงข้อมูลจากเว็บนี้ได้ชั่วคราว: {e}")
+                    news_content = "" # เคลียร์ค่าเพื่อให้ระบบไม่ไปต่อ
         else:
             st.warning("กรุณาใส่ URL ก่อนครับ")
 
@@ -103,7 +147,7 @@ with tab2:
         else:
             st.warning("กรุณาใส่เนื้อหาข่าวก่อนครับ")
 
-# ================= กระบวนการทำงานหลัก (Multi-Stage Pipeline + New Reference UI) =================
+# ================= กระบวนการทำงานหลัก =================
 if news_content:
     st.divider()
     start_process_time = time.time()
@@ -125,7 +169,7 @@ if news_content:
         st.write("🧠 [ด่านที่ 1]: สแกนหาคำกล่าวอ้างเชิงข้อเท็จจริง...")
         text_for_keyword = news_content.split("]:\n")[-1] if "[เนื้อหาข่าวจริง" in news_content else news_content
         
-        result_type, extracted_reason = classify_content(text_for_keyword)
+        result_type, extracted_reason = cached_classify(text_for_keyword)
         
         if result_type == "DROP":
             st.write(f"⏭️ [ผลการกรอง]: เนื้อหาไม่ใช่ข่าวสารสาธารณะ ยุติการทำงานเพื่อความรวดเร็ว (Fail-Fast)")
@@ -134,16 +178,15 @@ if news_content:
         
         else:
             st.write(f"🟢 [ผลการกรอง]: {extracted_reason} กำลังส่งต่อไปยังด่านสกัดคำค้นหา...")
-            search_query = generate_search_keywords(text_for_keyword)
+            search_query = cached_generate_keywords(text_for_keyword)
             if not search_query: search_query = re.sub(r'http[s]?://\S+|\[.*?\]', '', text_for_keyword)[:60].strip()
             
-            st.write(f"🌐 [ด่านที่ 2]: กำลังสืบค้นข้อมูลจาก 40+ สื่อหลัก ด้วยคำค้นหา: `{search_query}`")
-            references = search_news_references(search_query, num_results=5)
+            st.write(f"🌐 [ด่านที่ 2]: กำลังสืบค้นข้อมูลพร้อมกัน 3 แหล่ง ด้วยคำค้นหา: `{search_query}`")
+            references = cached_search(search_query)
                 
             st.write("⚖️ [ด่านที่ 3]: ข้อมูลพร้อมแล้ว! กำลังวิเคราะห์เปรียบเทียบสถิติและข้อเท็จจริง...")
-            result = analyze_news_with_qwen(news_content, references, current_date_str)
+            result = cached_analyze(news_content, references, current_date_str)
             
-            # การดันแหล่งอ้างอิงเว็บเข้าไปรวมกับหัวข้อที่ 3 ตามที่คุณต้องการ
             ref_markdown = "\n- **อ้างอิงจากการสืบค้น (สื่อหลัก):**"
             if references:
                 for idx, r in enumerate(references):
@@ -173,7 +216,6 @@ if news_content:
     with st.container(border=True):
         st.markdown(result)
         
-    # กล่อง Expander ตอนนี้เอาไว้ซ่อนแค่คีย์เวิร์ดอย่างเดียว เพื่อให้หน้าเว็บคลีนที่สุด
     with st.expander("🔑 ข้อมูลเชิงเทคนิค (AI Search Query)"):
         st.markdown(f"**คีย์เวิร์ดที่ AI ใช้สืบค้น:** `{search_query}`")
             

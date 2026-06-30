@@ -58,6 +58,42 @@ def force_extract_news_link(social_url: str) -> str:
     except Exception:
         return ""
 
+def fetch_with_fallback(url: str) -> str:
+    """🌟 ฟังก์ชันย่อยตัวใหม่: ใช้ดึงข้อมูลเว็บข่าว พร้อมระบบสลับช่องทางอัตโนมัติ (แก้ปัญหา 500 Error)"""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+    }
+    
+    # ช่องทางที่ 1: Jina Reader
+    try:
+        jina_url = f"https://r.jina.ai/{url}"
+        response = requests.get(jina_url, headers=headers, timeout=20)
+        if response.status_code == 200:
+            content = response.text
+            if len(content.strip()) > 100:
+                return content
+        raise Exception(f"Jina Reader Error {response.status_code}")
+    except Exception:
+        # ช่องทางที่ 2: BeautifulSoup (Fallback หาก Jina ล่ม หรือติดบล็อกเช่นเว็บ Sanook)
+        try:
+            res = requests.get(url, headers=headers, timeout=15)
+            res.raise_for_status()
+            if res.encoding is None or res.encoding.lower() == 'iso-8859-1':
+                res.encoding = res.apparent_encoding or 'utf-8'
+            
+            soup = BeautifulSoup(res.text, 'html.parser')
+            for element in soup(["script", "style", "nav", "header", "footer", "aside", "noscript"]):
+                element.extract()
+                
+            clean_text = re.sub(r'\s+', ' ', soup.get_text(separator=' ', strip=True)).strip()
+            if len(clean_text) > 100:
+                return clean_text
+        except Exception:
+            pass
+            
+    return ""
+
 def extract_text_from_url(url: str) -> dict:
     """ศูนย์กลางสกัดข้อมูล คืนค่าเนื้อหาและลิงก์จริงเสมอ"""
     try:
@@ -79,12 +115,10 @@ def extract_text_from_url(url: str) -> dict:
             if hidden_news_url:
                 actual_primary_url = hidden_news_url # เปลี่ยนลิงก์โซเชียล เป็นลิงก์ข่าวจริงทันที!
                 
-                # 3. ให้ Jina Reader วิ่งไปอ่านเนื้อหาข่าวเต็มๆ จากลิงก์จริงที่งัดมาได้
-                jina_url = f"https://r.jina.ai/{actual_primary_url}"
-                news_res = requests.get(jina_url, timeout=20)
+                # 3. ใช้งานระบบดึงข้อมูลแบบมี Fallback ป้องกันเว็บล่ม
+                actual_news_content = fetch_with_fallback(actual_primary_url)
                 
-                if news_res.status_code == 200:
-                    actual_news_content = news_res.text
+                if actual_news_content:
                     final_content = f"[พรีวิวจากโซเชียล]:\n{content}\n\n[เนื้อหาข่าวจริงที่ซ่อนอยู่ ({actual_primary_url})]:\n{actual_news_content}"
                     return {"content": final_content, "actual_url": actual_primary_url}
             
@@ -92,14 +126,12 @@ def extract_text_from_url(url: str) -> dict:
             return {"content": content, "actual_url": actual_primary_url}
             
         else:
-            # กรณีเว็บข่าวปกติ ให้ Jina อ่านตรงๆ เลย
-            jina_url = f"https://r.jina.ai/{url}"
-            response = requests.get(jina_url, timeout=20)
-            if response.status_code == 200:
-                content = response.text
-                return {"content": content, "actual_url": url}
+            # กรณีเว็บข่าวปกติ ให้ใช้ระบบดึงข้อมูลแบบมี Fallback กันเว็บล่ม (แก้ปัญหา Sanook)
+            actual_news_content = fetch_with_fallback(url)
+            if actual_news_content:
+                return {"content": actual_news_content, "actual_url": url}
             else:
-                return {"error": f"Error: ไม่สามารถดึงข้อมูลเว็บข่าวได้ (Status: {response.status_code})"}
+                return {"error": "Error: ไม่สามารถดึงข้อมูลเว็บข่าวได้ หรือเซิร์ฟเวอร์ปฏิเสธการเข้าถึง"}
                 
     except Exception as e:
         return {"error": f"Error: ระบบสกัดข้อมูลขัดข้อง - {str(e)}"}
