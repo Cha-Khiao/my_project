@@ -4,20 +4,19 @@ import datetime
 import time
 import os
 import csv
-import concurrent.futures # 🚀 เพิ่มไลบรารีเพื่อประมวลผลคู่ขนาน
+import concurrent.futures
+import threading # 🌟 นำเข้า Threading
+
+# 🌟 สร้างกุญแจล็อกไฟล์ ป้องกันการแย่งเขียน CSV พร้อมกัน
+csv_lock = threading.Lock() 
+
 from scraper import extract_text_from_url
 from search import search_news_references
 from llm import analyze_news_with_qwen, generate_search_keywords, classify_content
 
-# ================= ฟังก์ชัน Caching ที่ปรับปรุงไม่ให้จำ Error =================
 @st.cache_data(ttl=3600, show_spinner=False)
 def cached_extract_text(url):
-    result = extract_text_from_url(url)
-    if isinstance(result, dict) and "error" in result:
-        raise Exception(result["error"])
-    if isinstance(result, str) and ("500 Internal Server Error" in result or "Error" in result):
-        raise Exception(result)
-    return result
+    return extract_text_from_url(url)
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def cached_classify(text):
@@ -35,17 +34,9 @@ def cached_search(query):
 def cached_analyze(news_text, references, current_date):
     return analyze_news_with_qwen(news_text, references, current_date)
 
-# ================= ตั้งค่าหน้าเพจ & ซ่อนเมนู Streamlit =================
 st.set_page_config(page_title="Fact-Check AI", page_icon="🕵️‍♂️", layout="centered", initial_sidebar_state="expanded")
-st.markdown("""
-    <style>
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    .stAlert {border-radius: 10px;}
-    </style>
-    """, unsafe_allow_html=True)
+st.markdown("""<style>#MainMenu {visibility: hidden;} footer {visibility: hidden;} .stAlert {border-radius: 10px;}</style>""", unsafe_allow_html=True)
 
-# ================= ฟังก์ชันสำหรับจัดการ Log =================
 def save_system_log(input_type, input_data, search_query, references, ai_result, process_time):
     filename = "thesis_system_logs.csv"
     file_exists = os.path.isfile(filename)
@@ -60,12 +51,15 @@ def save_system_log(input_type, input_data, search_query, references, ai_result,
         score = "Error Parsing"
     short_input = input_data[:100].replace('\n', ' ') + "..." if len(input_data) > 100 else input_data.replace('\n', ' ')
     ref_details = " | ".join([f"{idx+1}. {r['title']} ({r['href']})" for idx, r in enumerate(references)]) if references else "ไม่พบอ้างอิงสืบค้น"
-    with open(filename, mode='a', encoding='utf-8-sig', newline='') as f:
-        writer = csv.writer(f)
-        if not file_exists:
-            writer.writerow(["วัน-เวลาที่ทดสอบ", "ประเภทข้อมูล", "ข้อความ (ย่อ)", "AI คีย์เวิร์ด", "จำนวนอ้างอิง", "รายละเอียดแหล่งอ้างอิง", "ผลประเมิน", "เวลาประมวลผล (วินาที)"])
-        current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        writer.writerow([current_time, input_type, short_input, search_query, len(references), ref_details, score, process_time])
+    
+    # 🌟 ล็อกประตู! จัดคิวให้ระบบเขียนไฟล์ทีละคน
+    with csv_lock: 
+        with open(filename, mode='a', encoding='utf-8-sig', newline='') as f:
+            writer = csv.writer(f)
+            if not file_exists:
+                writer.writerow(["วัน-เวลาที่ทดสอบ", "ประเภทข้อมูล", "ข้อความ (ย่อ)", "AI คีย์เวิร์ด", "จำนวนอ้างอิง", "รายละเอียดแหล่งอ้างอิง", "ผลประเมิน", "เวลาประมวลผล (วินาที)"])
+            current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            writer.writerow([current_time, input_type, short_input, search_query, len(references), ref_details, score, process_time])
 
 def get_system_stats():
     filename = "thesis_system_logs.csv"
@@ -79,17 +73,14 @@ def get_system_stats():
                     fake_news += 1
     return total_checks, fake_news
 
-# ================= แถบด้านข้าง (Sidebar) =================
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/2921/2921222.png", width=100)
     st.title("News Fact-Checker")
     st.markdown("ระบบวิเคราะห์ความน่าเชื่อถือของข่าวด้วย **AI (Qwen-2.5)**")
-    
     st.divider()
     if st.button("🗑️ ล้างหน่วยความจำ (Clear Cache)", use_container_width=True):
         st.cache_data.clear()
         st.success("✅ ล้างข้อมูลที่จำไว้เรียบร้อย! ลองกดค้นหาใหม่อีกครั้งครับ")
-        
     st.divider()
     st.subheader("📊 สถิติระบบ (Live)")
     total, fake = get_system_stats()
@@ -97,34 +88,43 @@ with st.sidebar:
     col1.metric("ตรวจสอบแล้ว", f"{total} ครั้ง")
     col2.metric("พบข่าวปลอม", f"{fake} ข่าว")
 
-# ================= ส่วนหน้าเว็บแอปพลิเคชันหลัก =================
 st.title("🕵️‍♂️ ตรวจสอบความจริงข่าวออนไลน์")
 st.markdown("วางลิงก์ข่าวหรือข้อความที่น่าสงสัย เพื่อให้ระบบ AI ช่วยวิเคราะห์ข้อเท็จจริง")
 
 tab1, tab2 = st.tabs(["🔗 ตรวจสอบจากลิงก์ (URL)", "📝 วางข้อความโดยตรง"])
 
-news_content = ""
-original_url = "" 
-url_input = "" 
-input_method_used = "" 
+news_content, original_url, url_input, input_method_used = "", "", "", ""
+
+VIDEO_PATTERNS = [
+    r'youtube\.com/watch', r'youtu\.be', r'youtube\.com/shorts',
+    r'tiktok\.com', r'vt\.tiktok\.com',
+    r'fb\.watch', r'facebook\.com/watch', r'/videos/', r'/reel/',
+    r'/share/v/', r'/share/r/', r'instagram\.com/reel',
+    r'vimeo\.com', r'dailymotion\.com'
+]
 
 with tab1:
     url_input = st.text_input("🔗 ใส่ลิงก์ข่าว หรือ ลิงก์โซเชียลมีเดียที่นี่:", placeholder="https://www.example.com/news...")
     if st.button("🔍 เริ่มวิเคราะห์จากลิงก์", type="primary", use_container_width=True):
         if url_input:
             input_method_used = "URL Link"
-            with st.spinner("⏳ กำลังสกัดเนื้อหาข้อมูล..."):
-                try:
+            if any(re.search(pattern, url_input.lower()) for pattern in VIDEO_PATTERNS):
+                news_content = "VIDEO_DETECTED"
+                original_url = url_input
+            else:
+                with st.spinner("⏳ กำลังสกัดเนื้อหาข้อมูล..."):
                     extracted_data = cached_extract_text(url_input)
                     if isinstance(extracted_data, dict):
-                        news_content = extracted_data.get("content", "")
-                        original_url = extracted_data.get("actual_url", url_input)
+                        if "error" in extracted_data:
+                            news_content = extracted_data["error"] 
+                        else:
+                            news_content = extracted_data.get("content", "")
+                            original_url = extracted_data.get("actual_url", url_input)
                     else:
-                        news_content = extracted_data
-                        original_url = url_input 
-                except Exception as e:
-                    st.error(f"❌ ระบบไม่สามารถดึงข้อมูลจากเว็บนี้ได้ชั่วคราว: {e}")
-                    news_content = "" 
+                        news_content = str(extracted_data)
+                    
+                    if not news_content or str(news_content).strip() == "":
+                        news_content = "EMPTY_CONTENT"
         else:
             st.warning("กรุณาใส่ URL ก่อนครับ")
 
@@ -138,77 +138,77 @@ with tab2:
         else:
             st.warning("กรุณาใส่เนื้อหาข่าวก่อนครับ")
 
-# ================= กระบวนการทำงานหลัก (Parallel Execution) =================
 if news_content:
     st.divider()
     start_process_time = time.time()
-    
-    news_content = re.sub(r'[\u4e00-\u9fff]+', '', news_content) 
-    if not re.search(r'[ก-๙]', news_content):
-        news_content = "เนื้อหาไม่มีภาษาไทยปะปนอยู่เลย ไม่สามารถประมวลผลได้"
-    
     months_th = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."]
     now = datetime.datetime.now()
     current_date_str = f"{now.day} {months_th[now.month - 1]} {now.year + 543}"
     
-    references = []
-    result = ""
-    search_query = ""
+    references, result, search_query = [], "", "SKIP_SEARCH"
     
     with st.status("🚀 ระบบกำลังตรวจสอบข้อมูลด้วยสมองกลคู่ขนาน...", expanded=True) as status:
         
-        st.write("⚡ [ประมวลผลคู่ขนาน]: สแกนคัดกรองข้อมูล พร้อมกับสกัดคีย์เวิร์ด...")
-        text_for_keyword = news_content.split("]:\n")[-1] if "[เนื้อหาข่าวจริง" in news_content else news_content
-        
-        # 🚀 จุดเปลี่ยนสำคัญ: สั่งให้ AI คิด 2 ฟังก์ชันนี้พร้อมกันเลยในคราวเดียว
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-            future_classify = executor.submit(cached_classify, text_for_keyword)
-            future_keywords = executor.submit(cached_generate_keywords, text_for_keyword)
+        if news_content == "VIDEO_DETECTED":
+            st.write("🛡️ [ระบบป้องกัน]: ตรวจพบแพลตฟอร์มวิดีโอ (YouTube, TikTok, Facebook Video)")
+            result = f"## 📌 1. สรุปประเด็นสำคัญ\n- ลิงก์ที่ระบุเป็นคลิปวิดีโอ ระบบอัตโนมัติไม่สามารถตรวจสอบภาพและเสียงในคลิปแทนคุณได้\n\n## 📊 2. การประเมินระดับความน่าเชื่อถือ\n**ระดับความน่าเชื่อถือ:** ⚪ N/A: อยู่นอกเหนือขอบเขต\n\n**เหตุผลประกอบการประเมิน:** กรุณาพิมพ์ข้อความสำคัญในคลิปมาวางในแท็บ 'วางข้อความโดยตรง' ครับ\n\n## 🔗 3. แหล่งอ้างอิง\n- ยุติการทำงานอย่างปลอดภัย"
+        elif news_content == "GAMBLING_DETECTED":
+            st.write("🚫 [ระบบความปลอดภัยขั้นสูง]: ตรวจพบเนื้อหาเกี่ยวข้องกับการพนัน/สิ่งผิดกฎหมาย")
+            result = f"## 📌 1. สรุปประเด็นสำคัญ\n- ลิงก์เชื่อมโยงไปยังเว็บไซต์การพนันออนไลน์ (สล็อต, บาคาร่า, เว็บตรง)\n\n## 📊 2. การประเมินระดับความน่าเชื่อถือ\n**ระดับความน่าเชื่อถือ:** ☠️ ระดับ 1: ข่าวปลอม / เว็บไซต์อันตราย\n\n**เหตุผลประกอบการประเมิน:** มักใช้คำโฆษณาเกินจริง ระบบจึงบล็อกการเข้าถึงโดยทันทีเพื่อความปลอดภัย\n\n## 🔗 3. แหล่งอ้างอิง\n- บล็อกการเชื่อมต่ออัตโนมัติ"
+        elif news_content == "LINK_UNSUPPORTED" or news_content == "EMPTY_CONTENT" or "ไม่สามารถดึงข้อมูล" in news_content:
+            st.write("⚠️ [การเชื่อมต่อถูกปฏิเสธ]: ไม่พบเนื้อหา หรือเว็บไซต์ปิดกั้นการเข้าถึง")
+            result = f"## 📌 1. สรุปประเด็นสำคัญ\n- เว็บไซต์มีระบบป้องกันบอท หรือไม่มีตัวหนังสือให้วิเคราะห์\n\n## 📊 2. การประเมินระดับความน่าเชื่อถือ\n**ระดับความน่าเชื่อถือ:** ⚪ N/A: ไม่มีข้อมูลให้ตรวจสอบ\n\n**เหตุผลประกอบการประเมิน:** กรุณาคัดลอกเนื้อหามาวางด้วยตนเองในแท็บ 'วางข้อความโดยตรง' ครับ\n\n## 🔗 3. แหล่งอ้างอิง\n- ยุติการทำงานอย่างปลอดภัย"
+        else:
+            news_content_th_check = re.sub(r'[\u4e00-\u9fff]+', '', news_content) 
+            if not re.search(r'[ก-๙]', news_content_th_check):
+                news_content = "เนื้อหาไม่มีภาษาไทยปะปนอยู่เลย ไม่สามารถประมวลผลได้"
+                
+            st.write("⚡ [ประมวลผลคู่ขนาน]: สแกนคัดกรองข้อมูล พร้อมกับสกัดคีย์เวิร์ด...")
+            text_for_keyword = news_content.split("]:\n")[-1] if "[เนื้อหาข่าวจริง" in news_content else news_content
             
-            # รอรับผลลัพธ์
-            result_type, extracted_reason = future_classify.result()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                future_classify = executor.submit(cached_classify, text_for_keyword)
+                future_keywords = executor.submit(cached_generate_keywords, text_for_keyword)
+                
+                result_type, extracted_reason = future_classify.result()
 
-            if result_type == "DROP":
-                st.write(f"⏭️ [ผลการกรอง]: เนื้อหาไม่ใช่ข่าวสารสาธารณะ ยุติการทำงานเพื่อความรวดเร็ว (Fail-Fast)")
-                search_query = "SKIP_SEARCH"
-                result = f"""## 📌 1. สรุปประเด็นสำคัญ\n- ไม่พบโครงสร้างของ 'คำกล่าวอ้างที่ตรวจสอบได้'\n\n## 📊 2. การประเมินระดับความน่าเชื่อถือ\n**ระดับความน่าเชื่อถือ:** ⚪ N/A: ไม่ใช่ข่าวหรือข้อมูลที่ตรวจสอบได้\n\n**เหตุผลประกอบการประเมิน:** {extracted_reason}\n\n## 🔗 3. แหล่งอ้างอิง\n- **แหล่งอ้างอิงที่อ้างในข้อความต้นฉบับ:** ไม่ระบุ\n- **อ้างอิงจากการสืบค้น (สื่อหลัก):** ระบบยุติการสืบค้นอัตโนมัติ"""
-            
-            else:
-                st.write(f"🟢 [ผลการกรอง]: {extracted_reason}")
-                
-                # ดึงคีย์เวิร์ดที่ AI คิดเสร็จแล้วขึ้นมาใช้ทันที ไม่ต้องรอคิดใหม่
-                search_query = future_keywords.result()
-                if not search_query: search_query = re.sub(r'http[s]?://\S+|\[.*?\]', '', text_for_keyword)[:60].strip()
-                
-                st.write(f"🌐 [ด่านที่ 2]: กำลังสืบค้นข้อมูลพร้อมกัน 3 แหล่ง ด้วยคำค้นหา: `{search_query}`")
-                references = cached_search(search_query)
-                    
-                st.write("⚖️ [ด่านที่ 3]: ข้อมูลพร้อมแล้ว! กำลังวิเคราะห์เปรียบเทียบสถิติและข้อเท็จจริง...")
-                result = cached_analyze(news_content, references, current_date_str)
-                
-                ref_markdown = "\n- **อ้างอิงจากการสืบค้น (สื่อหลัก):**"
-                if references:
-                    for idx, r in enumerate(references):
-                        ref_markdown += f"\n   {idx+1}. [{r['title']}]({r['href']})"
+                if result_type == "DROP":
+                    st.write(f"⏭️ [ผลการกรอง]: เนื้อหาไม่ใช่ข่าวสารสาธารณะ ยุติการทำงานเพื่อความรวดเร็ว")
+                    search_query = "SKIP_SEARCH"
+                    result = f"## 📌 1. สรุปประเด็นสำคัญ\n- ไม่พบโครงสร้างของ 'คำกล่าวอ้างที่ตรวจสอบได้'\n\n## 📊 2. การประเมินระดับความน่าเชื่อถือ\n**ระดับความน่าเชื่อถือ:** ⚪ N/A: ไม่ใช่ข่าวหรือข้อมูลที่ตรวจสอบได้\n\n**เหตุผลประกอบการประเมิน:** {extracted_reason}\n\n## 🔗 3. แหล่งอ้างอิง\n- **อ้างอิงจากการสืบค้น:** ยุติการสืบค้นอัตโนมัติ"
                 else:
-                    ref_markdown += " ไม่พบข้อมูลจากการสืบค้นบนอินเทอร์เน็ต"
+                    st.write(f"🟢 [ผลการกรอง]: {extracted_reason}")
+                    raw_query = future_keywords.result()
                     
-                result += ref_markdown 
+                    # 🌟 ทำความสะอาดคีย์เวิร์ด: ลบอักขระพิเศษทิ้ง กัน Google สับสน
+                    search_query = re.sub(r'[^\w\sก-๙]', ' ', raw_query).strip()
+                    if not search_query: search_query = re.sub(r'http[s]?://\S+|\[.*?\]', '', text_for_keyword)[:60].strip()
+                    
+                    st.write(f"🌐 [ด่านที่ 2]: กำลังสืบค้นข้อมูลพร้อมกัน 3 แหล่ง ด้วยคำค้นหา: `{search_query}`")
+                    references = cached_search(search_query)
+                        
+                    st.write("⚖️ [ด่านที่ 3]: ข้อมูลพร้อมแล้ว! กำลังวิเคราะห์เปรียบเทียบสถิติและข้อเท็จจริง...")
+                    result = cached_analyze(news_content, references, current_date_str)
+                    
+                    ref_markdown = "\n- **อ้างอิงจากการสืบค้น (สื่อหลัก):**"
+                    if references:
+                        for idx, r in enumerate(references): ref_markdown += f"\n   {idx+1}. [{r['title']}]({r['href']})"
+                    else:
+                        ref_markdown += " ไม่พบข้อมูลจากการสืบค้นบนอินเทอร์เน็ต"
+                        
+                    result += ref_markdown 
         
         end_process_time = time.time()
         total_time_taken = round(end_process_time - start_process_time, 2)
-        
         status.update(label=f"✅ ประมวลผลเสร็จสิ้น! (ใช้เวลา {total_time_taken} วินาที)", state="complete", expanded=False)
     
-    # ================= ส่วนจัดแต่งแสดงผลลัพธ์หน้าบ้าน =================
     st.subheader("📊 รายงานผลการประเมิน")
-    
     if "ระดับ 5" in result or "ระดับ 4" in result or "🟢" in result or "🟡" in result:
         st.success("✅ **ผลประเมินเบื้องต้น:** ข้อมูลนี้มีแนวโน้มเป็นความจริงและมีความน่าเชื่อถือ")
-    elif "ระดับ 1" in result or "ระดับ 2" in result or "ข่าวปลอม" in result or "☠️" in result or "🔴" in result:
-        st.error("🚨 **ผลประเมินเบื้องต้น:** เตือนภัย! ตรวจพบข้อมูลบิดเบือน หรือข่าวปลอม")
+    elif "ระดับ 1" in result or "ระดับ 2" in result or "ข่าวปลอม" in result or "☠️" in result or "🔴" in result or "เว็บไซต์อันตราย" in result:
+        st.error("🚨 **ผลประเมินเบื้องต้น:** เตือนภัย! ตรวจพบข้อมูลบิดเบือน หรือลิงก์อันตราย")
     elif "N/A" in result or "⚪" in result:
-        st.info("ℹ️ **ผลประเมินเบื้องต้น:** ไม่ใช่รูปแบบของข่าวหรือคำกล่าวอ้างที่ตรวจสอบได้")
+        st.info("ℹ️ **ผลประเมินเบื้องต้น:** ไม่ใช่รูปแบบของข่าว หรือไม่สามารถเข้าถึงข้อมูลได้")
     else:
         st.warning("⚠️ **ผลประเมินเบื้องต้น:** ข้อมูลก้ำกึ่ง โปรดอ่านรายละเอียดด้านล่าง")
 
