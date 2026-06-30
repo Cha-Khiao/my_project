@@ -4,11 +4,31 @@ from bs4 import BeautifulSoup
 from urllib.parse import unquote
 
 def extract_social_metadata(url: str) -> str:
-    """ดึงแคปชั่นพรีวิวจาก Social Media เท่าที่ระบบมันจะยอมให้ดึง"""
+    """ดึงแคปชั่นพรีวิวจาก Social Media (เวอร์ชัน API สำหรับ X เร็วปรู๊ดปร๊าด)"""
     headers = {
         "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
     }
     try:
+        # 🚀 1. ท่าไม้ตายสำหรับ X (Twitter): วิ่งเข้า API โดยตรง ไม่โหลดหน้าเว็บ ป้องกันการโดนดึงเวลา
+        if "x.com/" in url or "twitter.com/" in url:
+            # ดึงเฉพาะส่วนพาท (เช่น /username/status/12345)
+            match = re.search(r'(?:x|twitter)\.com(/.*)', url)
+            if match:
+                # ตัด Parameter สกปรกทิ้ง (เช่น ?t=xxx)
+                clean_path = match.group(1).split('?')[0] 
+                api_url = "https://api.vxtwitter.com" + clean_path
+                
+                # ยิงตรงเข้า API จะได้ผลลัพธ์ในเสี้ยววินาที
+                res = requests.get(api_url, timeout=10)
+                if res.status_code == 200:
+                    data = res.json()
+                    title = data.get("user_name", "ผู้ใช้งาน X")
+                    desc = data.get("text", "")
+                    return f"{title}\n{desc}".strip()
+                else:
+                    return f"Error: API ของ X ปฏิเสธการดึงข้อมูล ({res.status_code})"
+
+        # 🌐 2. สำหรับ Social อื่นๆ (Facebook, ฯลฯ) ดึงตามปกติ
         response = requests.get(url, headers=headers, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
         
@@ -18,12 +38,17 @@ def extract_social_metadata(url: str) -> str:
         title = og_title["content"] if og_title else ""
         desc = og_desc["content"] if og_desc else ""
         
-        return f"{title}\n{desc}"
+        return f"{title}\n{desc}".strip()
     except Exception as e:
         return f"Error: การสกัดข้อมูล Social Media ล้มเหลว - {str(e)}"
 
 def force_extract_news_link(social_url: str) -> str:
     """ท่าไม้ตายสาย Hacker: ควานหาลิงก์ข่าวจาก Source Code ดิบของ Facebook โดยตรง"""
+    
+    # 🛑 กฎเหล็ก: ข้ามการขุดโค้ดดิบถ้าเป็น X/Twitter (แก้ปัญหาเว็บตั้งใจค้าง 300 วินาทีเพื่อดักจับ Bot)
+    if "x.com" in social_url.lower() or "twitter.com" in social_url.lower():
+        return ""
+        
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
@@ -59,13 +84,12 @@ def force_extract_news_link(social_url: str) -> str:
         return ""
 
 def fetch_with_fallback(url: str) -> str:
-    """🌟 ฟังก์ชันย่อยตัวใหม่: ใช้ดึงข้อมูลเว็บข่าว พร้อมระบบสลับช่องทางอัตโนมัติ (แก้ปัญหา 500 Error)"""
+    """🌟 ฟังก์ชันย่อย: ใช้ดึงข้อมูลเว็บข่าว พร้อมระบบสลับช่องทางอัตโนมัติ (แก้ปัญหา 500 Error ของ Sanook)"""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
     }
     
-    # ช่องทางที่ 1: Jina Reader
     try:
         jina_url = f"https://r.jina.ai/{url}"
         response = requests.get(jina_url, headers=headers, timeout=20)
@@ -75,7 +99,6 @@ def fetch_with_fallback(url: str) -> str:
                 return content
         raise Exception(f"Jina Reader Error {response.status_code}")
     except Exception:
-        # ช่องทางที่ 2: BeautifulSoup (Fallback หาก Jina ล่ม หรือติดบล็อกเช่นเว็บ Sanook)
         try:
             res = requests.get(url, headers=headers, timeout=15)
             res.raise_for_status()
@@ -104,12 +127,12 @@ def extract_text_from_url(url: str) -> dict:
         actual_primary_url = url
         
         if is_social:
-            # 1. ดึงแคปชั่นชั้นนอกมาก่อน
+            # 1. ดึงแคปชั่นชั้นนอกมาก่อน (ด้วย API หรือ HTML)
             content = extract_social_metadata(url)
             if "Error" in content:
                 return {"error": content}
                 
-            # 2. ⚡ ใช้งานระบบสแกนโค้ดหลังบ้าน เจาะหาลิงก์ข่าวจริง
+            # 2. ⚡ ใช้งานระบบสแกนโค้ดหลังบ้าน เจาะหาลิงก์ข่าวจริง (ข้ามถ้าระบุว่าเป็น X)
             hidden_news_url = force_extract_news_link(url)
             
             if hidden_news_url:
@@ -122,11 +145,11 @@ def extract_text_from_url(url: str) -> dict:
                     final_content = f"[พรีวิวจากโซเชียล]:\n{content}\n\n[เนื้อหาข่าวจริงที่ซ่อนอยู่ ({actual_primary_url})]:\n{actual_news_content}"
                     return {"content": final_content, "actual_url": actual_primary_url}
             
-            # ถ้าเจาะไม่เข้าจริงๆ (ไม่มีลิงก์ข่าวในโพสต์นั้นเลย) ก็คืนค่าแค่แคปชั่นไป
+            # ถ้าเจาะไม่เข้าจริงๆ ก็คืนค่าแค่แคปชั่นไปให้ AI ตัดสิน
             return {"content": content, "actual_url": actual_primary_url}
             
         else:
-            # กรณีเว็บข่าวปกติ ให้ใช้ระบบดึงข้อมูลแบบมี Fallback กันเว็บล่ม (แก้ปัญหา Sanook)
+            # กรณีเว็บข่าวปกติ ให้ใช้ระบบดึงข้อมูลแบบมี Fallback
             actual_news_content = fetch_with_fallback(url)
             if actual_news_content:
                 return {"content": actual_news_content, "actual_url": url}

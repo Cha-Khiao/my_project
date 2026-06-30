@@ -4,6 +4,7 @@ import datetime
 import time
 import os
 import csv
+import concurrent.futures # 🚀 เพิ่มไลบรารีเพื่อประมวลผลคู่ขนาน
 from scraper import extract_text_from_url
 from search import search_news_references
 from llm import analyze_news_with_qwen, generate_search_keywords, classify_content
@@ -12,16 +13,10 @@ from llm import analyze_news_with_qwen, generate_search_keywords, classify_conte
 @st.cache_data(ttl=3600, show_spinner=False)
 def cached_extract_text(url):
     result = extract_text_from_url(url)
-    
-    # ถ้าดึงมาแล้วเป็น dict และมีคำว่า error (เช่น 500 Internal Server Error)
     if isinstance(result, dict) and "error" in result:
-        # ใช้ raise Exception เพื่อบังคับให้ Streamlit "ไม่จำ" ค่านี้ลง Cache
         raise Exception(result["error"])
-        
-    # ถ้าดึงมาแล้วได้เป็น string ธรรมดา แต่มีข้อความ Error โผล่มา
     if isinstance(result, str) and ("500 Internal Server Error" in result or "Error" in result):
         raise Exception(result)
-        
     return result
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -91,8 +86,6 @@ with st.sidebar:
     st.markdown("ระบบวิเคราะห์ความน่าเชื่อถือของข่าวด้วย **AI (Qwen-2.5)**")
     
     st.divider()
-    
-    # ปุ่มลับสำหรับ Dev ไว้กดเคลียร์แคชเวลามีปัญหา
     if st.button("🗑️ ล้างหน่วยความจำ (Clear Cache)", use_container_width=True):
         st.cache_data.clear()
         st.success("✅ ล้างข้อมูลที่จำไว้เรียบร้อย! ลองกดค้นหาใหม่อีกครั้งครับ")
@@ -122,7 +115,6 @@ with tab1:
             input_method_used = "URL Link"
             with st.spinner("⏳ กำลังสกัดเนื้อหาข้อมูล..."):
                 try:
-                    # ดึงข้อมูลผ่าน Cache ที่มีระบบดีด Error ทิ้ง
                     extracted_data = cached_extract_text(url_input)
                     if isinstance(extracted_data, dict):
                         news_content = extracted_data.get("content", "")
@@ -131,9 +123,8 @@ with tab1:
                         news_content = extracted_data
                         original_url = url_input 
                 except Exception as e:
-                    # ถ้าระบบโยน Error ออกมา จะมาเข้าตรงนี้แทน และหยุดการทำงานขั้นถัดไป
                     st.error(f"❌ ระบบไม่สามารถดึงข้อมูลจากเว็บนี้ได้ชั่วคราว: {e}")
-                    news_content = "" # เคลียร์ค่าเพื่อให้ระบบไม่ไปต่อ
+                    news_content = "" 
         else:
             st.warning("กรุณาใส่ URL ก่อนครับ")
 
@@ -147,7 +138,7 @@ with tab2:
         else:
             st.warning("กรุณาใส่เนื้อหาข่าวก่อนครับ")
 
-# ================= กระบวนการทำงานหลัก =================
+# ================= กระบวนการทำงานหลัก (Parallel Execution) =================
 if news_content:
     st.divider()
     start_process_time = time.time()
@@ -164,37 +155,45 @@ if news_content:
     result = ""
     search_query = ""
     
-    with st.status("🚀 ระบบกำลังตรวจสอบข้อมูลในระบบท่อส่งสัญญาณ...", expanded=True) as status:
+    with st.status("🚀 ระบบกำลังตรวจสอบข้อมูลด้วยสมองกลคู่ขนาน...", expanded=True) as status:
         
-        st.write("🧠 [ด่านที่ 1]: สแกนหาคำกล่าวอ้างเชิงข้อเท็จจริง...")
+        st.write("⚡ [ประมวลผลคู่ขนาน]: สแกนคัดกรองข้อมูล พร้อมกับสกัดคีย์เวิร์ด...")
         text_for_keyword = news_content.split("]:\n")[-1] if "[เนื้อหาข่าวจริง" in news_content else news_content
         
-        result_type, extracted_reason = cached_classify(text_for_keyword)
-        
-        if result_type == "DROP":
-            st.write(f"⏭️ [ผลการกรอง]: เนื้อหาไม่ใช่ข่าวสารสาธารณะ ยุติการทำงานเพื่อความรวดเร็ว (Fail-Fast)")
-            search_query = "SKIP_SEARCH"
-            result = f"""## 📌 1. สรุปประเด็นสำคัญ\n- ไม่พบโครงสร้างของ 'คำกล่าวอ้างที่ตรวจสอบได้'\n\n## 📊 2. การประเมินระดับความน่าเชื่อถือ\n**ระดับความน่าเชื่อถือ:** ⚪ N/A: ไม่ใช่ข่าวหรือข้อมูลที่ตรวจสอบได้\n\n**เหตุผลประกอบการประเมิน:** {extracted_reason}\n\n## 🔗 3. แหล่งอ้างอิง\n- **แหล่งอ้างอิงที่อ้างในข้อความต้นฉบับ:** ไม่ระบุ\n- **อ้างอิงจากการสืบค้น (สื่อหลัก):** ระบบยุติการสืบค้นอัตโนมัติ"""
-        
-        else:
-            st.write(f"🟢 [ผลการกรอง]: {extracted_reason} กำลังส่งต่อไปยังด่านสกัดคำค้นหา...")
-            search_query = cached_generate_keywords(text_for_keyword)
-            if not search_query: search_query = re.sub(r'http[s]?://\S+|\[.*?\]', '', text_for_keyword)[:60].strip()
+        # 🚀 จุดเปลี่ยนสำคัญ: สั่งให้ AI คิด 2 ฟังก์ชันนี้พร้อมกันเลยในคราวเดียว
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            future_classify = executor.submit(cached_classify, text_for_keyword)
+            future_keywords = executor.submit(cached_generate_keywords, text_for_keyword)
             
-            st.write(f"🌐 [ด่านที่ 2]: กำลังสืบค้นข้อมูลพร้อมกัน 3 แหล่ง ด้วยคำค้นหา: `{search_query}`")
-            references = cached_search(search_query)
-                
-            st.write("⚖️ [ด่านที่ 3]: ข้อมูลพร้อมแล้ว! กำลังวิเคราะห์เปรียบเทียบสถิติและข้อเท็จจริง...")
-            result = cached_analyze(news_content, references, current_date_str)
+            # รอรับผลลัพธ์
+            result_type, extracted_reason = future_classify.result()
+
+            if result_type == "DROP":
+                st.write(f"⏭️ [ผลการกรอง]: เนื้อหาไม่ใช่ข่าวสารสาธารณะ ยุติการทำงานเพื่อความรวดเร็ว (Fail-Fast)")
+                search_query = "SKIP_SEARCH"
+                result = f"""## 📌 1. สรุปประเด็นสำคัญ\n- ไม่พบโครงสร้างของ 'คำกล่าวอ้างที่ตรวจสอบได้'\n\n## 📊 2. การประเมินระดับความน่าเชื่อถือ\n**ระดับความน่าเชื่อถือ:** ⚪ N/A: ไม่ใช่ข่าวหรือข้อมูลที่ตรวจสอบได้\n\n**เหตุผลประกอบการประเมิน:** {extracted_reason}\n\n## 🔗 3. แหล่งอ้างอิง\n- **แหล่งอ้างอิงที่อ้างในข้อความต้นฉบับ:** ไม่ระบุ\n- **อ้างอิงจากการสืบค้น (สื่อหลัก):** ระบบยุติการสืบค้นอัตโนมัติ"""
             
-            ref_markdown = "\n- **อ้างอิงจากการสืบค้น (สื่อหลัก):**"
-            if references:
-                for idx, r in enumerate(references):
-                    ref_markdown += f"\n   {idx+1}. [{r['title']}]({r['href']})"
             else:
-                ref_markdown += " ไม่พบข้อมูลจากการสืบค้นบนอินเทอร์เน็ต"
+                st.write(f"🟢 [ผลการกรอง]: {extracted_reason}")
                 
-            result += ref_markdown 
+                # ดึงคีย์เวิร์ดที่ AI คิดเสร็จแล้วขึ้นมาใช้ทันที ไม่ต้องรอคิดใหม่
+                search_query = future_keywords.result()
+                if not search_query: search_query = re.sub(r'http[s]?://\S+|\[.*?\]', '', text_for_keyword)[:60].strip()
+                
+                st.write(f"🌐 [ด่านที่ 2]: กำลังสืบค้นข้อมูลพร้อมกัน 3 แหล่ง ด้วยคำค้นหา: `{search_query}`")
+                references = cached_search(search_query)
+                    
+                st.write("⚖️ [ด่านที่ 3]: ข้อมูลพร้อมแล้ว! กำลังวิเคราะห์เปรียบเทียบสถิติและข้อเท็จจริง...")
+                result = cached_analyze(news_content, references, current_date_str)
+                
+                ref_markdown = "\n- **อ้างอิงจากการสืบค้น (สื่อหลัก):**"
+                if references:
+                    for idx, r in enumerate(references):
+                        ref_markdown += f"\n   {idx+1}. [{r['title']}]({r['href']})"
+                else:
+                    ref_markdown += " ไม่พบข้อมูลจากการสืบค้นบนอินเทอร์เน็ต"
+                    
+                result += ref_markdown 
         
         end_process_time = time.time()
         total_time_taken = round(end_process_time - start_process_time, 2)

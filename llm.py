@@ -15,19 +15,14 @@ def clean_llm_output(text: str) -> str:
     return text.strip()
 
 def classify_content(news_text: str) -> tuple:
-    """Stage 1: ด่านคัดกรองแบบจัดเต็ม (แยกแยะข่าว vs ไม่ใช่ข่าว)"""
-    
-    # 🚫 ด่านที่ 0: ป้องกันโฆษณา/ขายของ หลุดเข้ามาเพราะมีตัวเลข
+    """Stage 1: ด่านคัดกรองแบบจัดเต็ม"""
     ad_keywords = r'(ราคา|บาท|โปรโมชั่น|สั่งซื้อ|ลดราคา|ส่งฟรี|พร้อมส่ง|Shopee|Lazada|TikTok Shop|ตะกร้า|งวดนี้|เลขเด็ด|คูปอง)'
     if re.search(ad_keywords, news_text, re.IGNORECASE):
-        # ถ้าพบคำกลุ่มโฆษณา บังคับให้ข้ามกฎเหล็กข้อล่าง เพื่อให้ AI เป็นคนตัดสินใจว่า DROP หรือไม่
         pass
-    # 🛡️ กฎเหล็ก (Heuristic Bypass): ถ้าเจอตัวเลข สถิติ เปอร์เซ็นต์ บังคับผ่าน 100% แก้อาการ AI มักง่ายปัดตกข่าวสถิติ
     elif re.search(r'\d{1,3}(,\d{3})+|\d+(\.\d+)?\s?(%|เปอร์เซ็นต์|ล้าน|แสน|หมื่น|เสียง|คะแนน)', news_text):
         return "PROCEED", "ตรวจพบสถิติ ตัวเลข หรือข้อมูลเชิงปริมาณ จึงส่งเข้าตรวจสอบความจริงทันที"
 
     text_chunk = news_text[:2500]
-    
     prompt = f"""คุณคือผู้เชี่ยวชาญด้านการคัดกรองข้อมูลหน้าด่าน
     หน้าที่: พิจารณาว่าข้อความนี้มี "คำกล่าวอ้าง/การรายงานเหตุการณ์สาธารณะ" หรือไม่?
 
@@ -56,7 +51,8 @@ def classify_content(news_text: str) -> tuple:
                 "model": "qwen/qwen-2.5-7b-instruct",
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.1
-            })
+            }),
+            timeout=10 # ⏱️ ป้องกันหมุนค้าง: บังคับรอสูงสุดแค่ 10 วินาที
         )
         raw_content = clean_llm_output(response.json()['choices'][0]['message']['content'])
         
@@ -65,15 +61,15 @@ def classify_content(news_text: str) -> tuple:
         
         result_type = match_result.group(1).upper() if match_result else "PROCEED"
         reason = match_reason.group(1).strip() if match_reason else "ระบบประเมินว่าควรได้รับการตรวจสอบ"
-        
         return result_type, reason
+    except requests.exceptions.Timeout:
+        return "PROCEED", "เซิร์ฟเวอร์ AI คัดกรองตอบสนองช้า จึงส่งเข้าตรวจสอบความปลอดภัยทันที"
     except Exception:
         return "PROCEED", "ระบบคัดกรองขัดข้อง เข้าสู่กระบวนการค้นหาเพื่อความปลอดภัย"
 
 def generate_search_keywords(news_text: str) -> str:
     """Stage 2: เครื่องยนต์สกัดคีย์เวิร์ดแบบละเอียด"""
     text_chunk = news_text[:2500]
-    
     prompt = f"""คุณคือผู้เชี่ยวชาญด้าน Search Engine Optimization (SEO) 
     หน้าที่ของคุณคือสกัด "กลุ่มคำค้นหา (Keywords)" จากเนื้อหาด้านล่าง เพื่อนำไปใช้เสิร์ชหาข่าวใน Google
     
@@ -93,7 +89,8 @@ def generate_search_keywords(news_text: str) -> str:
                 "model": "qwen/qwen-2.5-7b-instruct",
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.1
-            })
+            }),
+            timeout=10 # ⏱️ ป้องกันหมุนค้าง: บังคับรอสูงสุดแค่ 10 วินาที
         )
         keywords = clean_llm_output(response.json()['choices'][0]['message']['content'])
         keywords = keywords.replace('"', '').replace("'", "").replace("**", "")
@@ -149,8 +146,11 @@ def analyze_news_with_qwen(news_text: str, references: list, current_date: str) 
                     {"role": "user", "content": prompt}
                 ],
                 "temperature": 0.1 
-            })
+            }),
+            timeout=25 # ⏱️ ขั้นตอนนี้ใช้เวลาคิดนานสุด ให้รอได้สูงสุด 25 วินาที
         )
         return clean_llm_output(response.json()['choices'][0]['message']['content'])
+    except requests.exceptions.Timeout:
+        return f"### ❌ เกิดข้อผิดพลาด: เซิร์ฟเวอร์ AI มีคนใช้งานหนาแน่นและตอบสนองช้าเกินเวลาที่กำหนด (Timeout) โปรดกดทดสอบใหม่อีกครั้ง"
     except Exception:
         return f"### ❌ เกิดข้อผิดพลาดในการเชื่อมต่อกับระบบ AI"
