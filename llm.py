@@ -7,7 +7,14 @@ import time  # 🌟 เพิ่ม time สำหรับการหน่ว
 from dotenv import load_dotenv
 
 load_dotenv()
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+
+# 🌟 วิธีดึงกุญแจแบบ "กันตาย" (รองรับทั้งตอนรันในคอม และตอนอัปขึ้น Cloud)
+try:
+    # พยายามดึงจากตู้เซฟของ Streamlit Cloud ก่อน
+    OPENROUTER_API_KEY = st.secrets["OPENROUTER_API_KEY"]
+except Exception:
+    # ถ้าหาไม่เจอ ให้ดึงจากไฟล์ .env (สำหรับตอนรันในคอมตัวเอง)
+    OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 def clean_llm_output(text: str) -> str:
     text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
