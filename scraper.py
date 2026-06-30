@@ -23,9 +23,10 @@ def resolve_short_url(url: str) -> str:
     return url
 
 def extract_social_metadata(url: str) -> str:
-    """ดึงแคปชั่นพรีวิวจาก Social Media"""
+    """ดึงแคปชั่นพรีวิวจาก Social Media (เจาะเกราะ IG / X)"""
     headers = {"User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"}
     try:
+        # 🌟 1. ด่านทะลวง X (Twitter) [ของเดิมที่ทำงานได้ดีอยู่แล้ว]
         if "x.com/" in url or "twitter.com/" in url:
             match = re.search(r'(?:x|twitter)\.com(/.*)', url)
             if match:
@@ -40,6 +41,29 @@ def extract_social_metadata(url: str) -> str:
                 else:
                     return f"Error: API ของ X ปฏิเสธการดึงข้อมูล ({res.status_code})"
 
+        # 🌟 2. ด่านอาวุธลับทะลวงกำแพง Instagram (ใหม่ล่าสุด!)
+        elif "instagram.com/" in url:
+            # สลับ URL จาก instagram.com เป็น ddinstagram.com เพื่อหลบการบล็อก Cloud IP
+            ig_proxy_url = url.replace("instagram.com", "ddinstagram.com")
+            # ถ้าเป็นลิงก์สั้นๆ อาจจะมี /p/ หรือ /reel/ 
+            
+            response = requests.get(ig_proxy_url, headers=headers, timeout=15)
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # ดึงแคปชั่นจาก Meta Tag ที่ ddinstagram สกัดมาให้แล้ว
+            og_title = soup.find("meta", property="og:title")
+            og_desc = soup.find("meta", property="og:description")
+            
+            title = og_title["content"] if og_title else "โพสต์จาก Instagram"
+            desc = og_desc["content"] if og_desc else ""
+            
+            # ป้องกันกรณีที่ ddinstagram เองก็ดึงไม่ได้
+            if "Login" in title or "เข้าสู่ระบบ" in desc:
+                return "Error: ไม่สามารถทะลวงระบบความปลอดภัยของ Instagram ได้ในขณะนี้"
+                
+            return f"{title}\n{desc}".strip()
+
+        # 🌟 3. จัดการเว็บโซเชียลอื่นๆ ทั่วไป (Facebook, LINE, ฯลฯ)
         response = requests.get(url, headers=headers, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
         
@@ -50,6 +74,7 @@ def extract_social_metadata(url: str) -> str:
         desc = og_desc["content"] if og_desc else ""
         
         return f"{title}\n{desc}".strip()
+        
     except Exception as e:
         return f"Error: การสกัดข้อมูล Social Media ล้มเหลว - {str(e)}"
 
