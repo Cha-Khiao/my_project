@@ -6,6 +6,7 @@ import os
 import csv
 import concurrent.futures
 import threading 
+import urllib.parse # 🌟 เพิ่มไลบรารีจัดการ URL สำหรับ Apple
 
 # 🌟 สร้างกุญแจล็อกไฟล์ ป้องกันการแย่งเขียน CSV
 csv_lock = threading.Lock() 
@@ -14,8 +15,9 @@ from scraper import extract_text_from_url
 from search import search_news_references
 from llm import analyze_news_with_qwen, generate_search_keywords, classify_content
 
-@st.cache_data(ttl=3600, show_spinner=False)
+# 🌟 ปิด Cache สำหรับฟังก์ชันดึงเว็บ ป้องกันปัญหาระบบจำค่า Error (N/A ถาวร)
 def cached_extract_text(url): return extract_text_from_url(url)
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def cached_classify(text): return classify_content(text)
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -33,7 +35,7 @@ st.markdown("""
     /* อิมพอร์ตฟอนต์ Prompt */
     @import url('https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;500;600;700&display=swap');
     
-    /* แก้ปัญหาคำซ้อนทับ: ใช้ line-height จัดระยะบรรทัด โดยไม่จำกัดขนาดฟอนต์ (font-size) ให้กลับไปใช้ขนาดดั้งเดิม */
+    /* แก้ปัญหาคำซ้อนทับ */
     .stMarkdown, .stMarkdown p, .stMarkdown li, .stMarkdown span, .stMarkdown h1, .stMarkdown h2, .stMarkdown h3 {
         font-family: 'Prompt', sans-serif !important;
         line-height: 1.6 !important; 
@@ -43,7 +45,7 @@ st.markdown("""
         font-family: 'Prompt', sans-serif !important;
     }
     
-    /* ป้องกันฟอนต์ Icon ของระบบถูกเขียนทับ (แก้บั๊ก check) */
+    /* ป้องกันฟอนต์ Icon ของระบบถูกเขียนทับ */
     [data-testid="stIconMaterial"], .material-icons, .stIcon {
         font-family: 'Material Symbols Rounded' !important;
     }
@@ -194,31 +196,44 @@ with tab1:
             input_method_used = "URL Link"
             
             # =========================================================================
-            # 🌟 ULTIMATE URL EXTRACTOR (แก้ปัญหา Python Crash จาก iOS/Android Clipboard)
+            # 🌟 ULTIMATE URL EXTRACTOR (อัปเกรดแก้ปัญหา Apple/iOS Clipboard + URL Encoding)
             # =========================================================================
             raw_input = url_input.strip()
             
-            # 1. ค้นหาลิงก์แบบถอนรากถอนโคน ทะลวงผ่านคำแถมและ Smart Quotes
-            match_http = re.search(r'(https?://[^\s"\'“”‘’«»„]+)', raw_input, re.IGNORECASE)
+            # 1. กำจัดอักขระล่องหน (Zero-width) ที่มากับการก๊อปปี้บน iOS 
+            raw_input = re.sub(r'[\x00-\x1F\x7F-\x9F\u200B-\u200F\u2028-\u202F\u2060-\u206F\uFEFF]', '', raw_input)
+            
+            # 2. ค้นหาลิงก์แบบถอนรากถอนโคน ทะลวงผ่านคำแถมและ Smart Quotes ของ Apple
+            match_http = re.search(r'(https?://[^\s"\'“”‘’«»„<>]+)', raw_input, re.IGNORECASE)
             
             if match_http:
                 clean_url = match_http.group(1)
             else:
-                # 2. ถ้าผู้ใช้ไม่ได้พิมพ์ http ระบบจะควานหาโดเมนแทน
-                match_domain = re.search(r'([a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:/[^\s"\'“”‘’«»„]*)?)', raw_input)
+                match_domain = re.search(r'([a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:/[^\s"\'“”‘’«»„<>]*)?)', raw_input)
                 if match_domain:
                     clean_url = 'https://' + match_domain.group(1)
                 else:
                     clean_url = raw_input
                     
-            # 3. กำจัดอักขระล่องหน (Zero-width), เครื่องหมายคำพูดทุกภาษา, และช่องว่างแปลกๆ ที่ทำให้ requests พังใน 0.05วิ
-            clean_url = re.sub(r'["\'“”‘’«»„\x00-\x1F\u200B-\u200F\u2028-\u202F\uFEFF]', '', clean_url)
+            # 3. ลบเครื่องหมายคำพูดหรือวงเล็บที่อาจติดมาท้ายลิงก์ 
+            clean_url = clean_url.strip('\'"“”‘’«»„()[]{}')
             
-            # 4. บังคับ scheme ให้เป็นพิมพ์เล็กเท่านั้น (ป้องกัน Https://)
+            # 4. บังคับ scheme ให้เป็นพิมพ์เล็กเท่านั้น
             if clean_url.lower().startswith('http://'):
                 clean_url = 'http://' + clean_url[7:]
             elif clean_url.lower().startswith('https://'):
                 clean_url = 'https://' + clean_url[8:]
+            elif not clean_url.lower().startswith('http'):
+                clean_url = 'https://' + clean_url
+                
+            # 5. URL Encoding: แปลงภาษาไทยในลิงก์ให้ถูกต้อง ป้องกัน requests พังทันที 
+            try:
+                parsed = urllib.parse.urlparse(clean_url)
+                encoded_path = urllib.parse.quote(urllib.parse.unquote(parsed.path), safe='/')
+                encoded_query = urllib.parse.quote(urllib.parse.unquote(parsed.query), safe='=&')
+                clean_url = urllib.parse.urlunparse((parsed.scheme, parsed.netloc, encoded_path, parsed.params, encoded_query, parsed.fragment))
+            except Exception:
+                pass
             # =========================================================================
             
             if any(re.search(pattern, clean_url.lower()) for pattern in VIDEO_PATTERNS):
