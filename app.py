@@ -195,16 +195,19 @@ with tab1:
         if url_input:
             input_method_used = "URL Link"
             
-            # 🌟 ส่วนที่เพิ่มเข้ามา: สกัดเอาเฉพาะ URL เผื่อกรณีมือถือ/iOS ก๊อปปี้ข้อความอื่นติดมาด้วย
-            url_match = re.search(r'(https?://[^\s]+)', url_input)
-            clean_url = url_match.group(1) if url_match else url_input
+            # 🌟 อัปเกรด: เครื่องกรองอักขระล่องหนจาก iOS (Zero-width / Control characters)
+            # 1. กำจัดอักขระแปลกปลอมที่มองไม่เห็นทั้งหมด
+            clean_url = re.sub(r'[\x00-\x1F\x7F-\x9F\u200B-\u200F\u2028-\u202F\u205F\u3000\uFEFF]', '', url_input).strip()
+            # 2. ดึงมาเฉพาะก้อนที่เป็นลิงก์จริงๆ (ทิ้งข้อความที่อาจแถมมาตอนก็อปปี้)
+            url_match = re.search(r'(https?://[^\s<>"]+)', clean_url)
+            clean_url = url_match.group(1) if url_match else clean_url
             
             if any(re.search(pattern, clean_url.lower()) for pattern in VIDEO_PATTERNS):
                 news_content = "VIDEO_DETECTED"
                 original_url = clean_url
             else:
                 with st.spinner("⏳ กำลังเชื่อมต่อและสกัดเนื้อหาจากเว็บไซต์ปลายทาง..."):
-                    # 🌟 เปลี่ยนจาก url_input มาใช้ clean_url แทน
+                    # ส่ง clean_url ที่ทำความสะอาดแล้วไปดึงข้อมูล
                     extracted_data = cached_extract_text(clean_url)
                     if isinstance(extracted_data, dict):
                         news_content = extracted_data.get("error", extracted_data.get("content", ""))
