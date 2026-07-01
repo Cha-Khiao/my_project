@@ -30,15 +30,12 @@ st.set_page_config(page_title="AI Fact-Checker", page_icon="🛡️", layout="ce
 
 st.markdown("""
     <style>
-    /* อิมพอร์ตฟอนต์ Prompt */
     @import url('https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;500;600;700&display=swap');
     
-    /* จำกัดขอบเขตฟอนต์ให้อยู่แค่เนื้อหา ป้องกันเมนูธีมล้นกรอบ */
     h1, h2, h3, h4, h5, h6, p, a, button, input, textarea, label, li, span {
         font-family: 'Prompt', sans-serif !important;
     }
     
-    /* ป้องกันฟอนต์ Icon ของระบบถูกเขียนทับ (แก้บั๊ก check) */
     [data-testid="stIconMaterial"], .material-icons, .stIcon {
         font-family: 'Material Symbols Rounded' !important;
     }
@@ -46,7 +43,6 @@ st.markdown("""
     footer {visibility: hidden;} 
     .stAlert {border-radius: 12px;}
     
-    /* ปุ่มกดหลัก ให้ขนาดพอดีข้อความ */
     .stButton>button {
         border-radius: 8px !important; 
         font-weight: 500 !important;
@@ -62,7 +58,6 @@ st.markdown("""
         opacity: 1 !important;
     }
     
-    /* ลิงก์อ้างอิง (แก้ปัญหาสีดรอปในโหมดสว่าง) */
     .stMarkdown a {
         word-wrap: break-word; overflow-wrap: break-word; word-break: break-all;
         color: #1e40af !important; 
@@ -88,7 +83,6 @@ st.markdown("""
     div[data-testid="stVerticalBlock"] div[data-testid="stVerticalBlock"] { gap: 1.2rem !important; }
     p, li { line-height: 1.7 !important; font-size: 1.05rem !important; }
     
-    /* ปุ่มลับ ⚙️ มุมขวาล่าง */
     div[data-testid="stButton"] button[kind="secondary"] {
         position: fixed !important; bottom: 15px !important; right: 15px !important;
         opacity: 0.0 !important; transition: all 0.3s ease-in-out !important;
@@ -170,8 +164,6 @@ st.write("")
 tab1, tab2 = st.tabs(["🌐 ตรวจสอบจากลิงก์ (URL)", "📄 ตรวจสอบจากข้อความ"])
 
 news_content, original_url, url_input, input_method_used = "", "", "", ""
-
-# 🌟 นำลิงก์ IG และ Reels ออก เพื่อปล่อยให้ระบบหลังบ้านดึงข้อมูล!
 VIDEO_PATTERNS = [
     r'youtube\.com/watch', r'youtu\.be', r'youtube\.com/shorts', 
     r'tiktok\.com', r'vt\.tiktok\.com', 
@@ -235,10 +227,10 @@ if news_content:
             st.write("🚫 ตรวจพบเนื้อหาความเสี่ยงสูง")
             result = f"## 📌 1. สรุปประเด็นสำคัญ\nลิงก์เชื่อมโยงไปยังเว็บไซต์การพนันออนไลน์ สแปม หรือเนื้อหาหลอกลวงเกินจริง\n\n## 📊 2. การประเมินระดับความน่าเชื่อถือ\n**ระดับความน่าเชื่อถือ:** ระดับ 1\n\nระบบดำเนินการระงับการเชื่อมต่อเพื่อป้องกันความปลอดภัยของอุปกรณ์ผู้ใช้"
         
-        # 🌟 ฟังก์ชันกู้ชีพ: ดักจับ Error ตอน Cloud ดึงข้อมูล IG/Social ไม่ได้
-        elif "ทะลวงระบบ" in news_content or "Error:" in news_content or "SOCIAL_BLOCKED" in news_content:
+        # 🌟 ฟังก์ชันดักจับ: ถ้าเป็นลิงก์ IG แล้วอ่านภาษาไทยไม่ได้ (ได้แต่คำว่า Login กลับมา) ให้เตือนว่าโดนบล็อก
+        elif "ทะลวงระบบ" in news_content or "Error:" in news_content or "SOCIAL_BLOCKED" in news_content or (("instagram.com" in original_url or "facebook.com" in original_url) and not re.search(r'[ก-๙]', news_content)):
             st.write("⚠️ ระบบความปลอดภัย: โซเชียลมีเดียปลายทางปฏิเสธการดึงข้อมูล")
-            result = f"## 📌 1. สรุปประเด็นสำคัญ\nแพลตฟอร์มโซเชียลมีเดียมีระบบป้องกันการดึงข้อมูล (Anti-Scraping) ทำให้เซิร์ฟเวอร์ Cloud ของเราไม่สามารถเข้าถึงข้อความในโพสต์นี้ได้\n\n## 📊 2. การประเมินระดับความน่าเชื่อถือ\n**ระดับความน่าเชื่อถือ:** N/A\n\n**ข้อแนะนำ:** กรุณาคัดลอกเนื้อหาหรือแคปชั่นจากโซเชียลมีเดีย มาวางด้วยตนเองในแท็บ **'ตรวจสอบจากข้อความ'** ครับ"
+            result = f"## 📌 1. สรุปประเด็นสำคัญ\nแพลตฟอร์มโซเชียลมีเดียมีระบบป้องกันการดึงข้อมูล (Anti-Scraping) ทำให้เซิร์ฟเวอร์ Cloud ของเราไม่สามารถเข้าถึงข้อความในโพสต์นี้ได้\n\n## 📊 2. การประเมินระดับความน่าเชื่อถือ\n**ระดับความน่าเชื่อถือ:** N/A\n\n**ข้อแนะนำ:** เนื่องจากระบบความปลอดภัยของโซเชียลมีเดีย กรุณาคัดลอกเนื้อหาหรือแคปชั่น มาวางด้วยตนเองในแท็บ **'ตรวจสอบจากข้อความ'** ครับ"
             
         elif news_content in ["LINK_UNSUPPORTED", "EMPTY_CONTENT"] or "ไม่สามารถดึงข้อมูล" in news_content:
             st.write("⚠️ เว็บไซต์ปลายทางปฏิเสธการเชื่อมต่อ")
