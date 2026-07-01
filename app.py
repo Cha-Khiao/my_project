@@ -33,8 +33,13 @@ st.markdown("""
     /* อิมพอร์ตฟอนต์ Prompt */
     @import url('https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;500;600;700&display=swap');
     
-    /* จำกัดขอบเขตฟอนต์ให้อยู่แค่เนื้อหา ป้องกันเมนูธีมล้นกรอบ */
-    h1, h2, h3, h4, h5, h6, p, a, button, input, textarea, label, li, span {
+    /* แก้ปัญหาคำซ้อนทับ: ใช้ line-height จัดระยะบรรทัด โดยไม่จำกัดขนาดฟอนต์ (font-size) ให้กลับไปใช้ขนาดดั้งเดิม */
+    .stMarkdown, .stMarkdown p, .stMarkdown li, .stMarkdown span, .stMarkdown h1, .stMarkdown h2, .stMarkdown h3 {
+        font-family: 'Prompt', sans-serif !important;
+        line-height: 1.6 !important; 
+    }
+    
+    button, input, textarea, label {
         font-family: 'Prompt', sans-serif !important;
     }
     
@@ -46,7 +51,7 @@ st.markdown("""
     footer {visibility: hidden;} 
     .stAlert {border-radius: 12px;}
     
-    /* ปุ่มกดหลัก ให้ขนาดพอดีข้อความ */
+    /* ปุ่มกดหลัก */
     .stButton>button {
         border-radius: 8px !important; 
         font-weight: 500 !important;
@@ -85,9 +90,6 @@ st.markdown("""
         }
     }
     
-    div[data-testid="stVerticalBlock"] div[data-testid="stVerticalBlock"] { gap: 1.2rem !important; }
-    p, li { line-height: 1.7 !important; font-size: 1.05rem !important; }
-    
     /* ปุ่มลับ ⚙️ มุมขวาล่าง */
     div[data-testid="stButton"] button[kind="secondary"] {
         position: fixed !important; bottom: 15px !important; right: 15px !important;
@@ -107,8 +109,10 @@ st.markdown("""
 # ================= 2. ฟังก์ชันจัดการข้อมูลและคะแนน =================
 def stream_text(text, delay=0.012):
     text = text.replace("*", "") 
-    for word in text.split(" "):
-        yield word + " "
+    # แก้ไขการ stream text ให้รองรับการเว้นบรรทัดและช่องว่างอย่างถูกต้อง ป้องกันข้อความกระโดดทับกัน
+    chunks = re.split(r'(\s+)', text)
+    for chunk in chunks:
+        yield chunk
         time.sleep(delay)
 
 def extract_score_info(text):
@@ -159,7 +163,7 @@ def save_system_log(input_type, input_data, search_query, references, ai_result,
 
 # ================= 4. ส่วนหัว (Header) =================
 st.markdown("""
-<div style='text-align: center;'>
+<div style='text-align: center; font-family: "Prompt", sans-serif;'>
     <h1 style='font-size: 2.5rem; margin-bottom: 0px;'>🛡️ AI Fact-Checker</h1>
     <p style='font-size: 1.1rem; opacity: 0.8; margin-top: 5px;'>ระบบประเมินความน่าเชื่อถือของข่าว โดยใช้ปัญญาประดิษฐ์</p>
 </div>
@@ -278,7 +282,7 @@ if news_content:
     pct, color, bg_color, border_color, label = extract_score_info(result)
     
     score_card_html = f"""
-    <div style="text-align: center; padding: 25px; background-color: {bg_color}; border-radius: 16px; margin-bottom: 25px; border: 2px solid {border_color};">
+    <div style="text-align: center; padding: 25px; background-color: {bg_color}; border-radius: 16px; margin-bottom: 25px; border: 2px solid {border_color}; font-family: 'Prompt', sans-serif;">
         <p style="margin: 0; font-size: 1.1rem; font-weight: 500; opacity: 0.8;">ผลการประเมินความน่าเชื่อถือโดย AI</p>
         <h1 style="margin: 10px 0; font-size: 5.5rem; color: {color}; font-weight: 700; line-height: 1;">{pct}</h1>
         <span style="background-color: {color}; color: white; padding: 6px 20px; border-radius: 20px; font-weight: 500; font-size: 1.05rem; box-shadow: 0 2px 5px rgba(0,0,0,0.1);">{label}</span>
