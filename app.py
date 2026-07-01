@@ -33,7 +33,7 @@ st.markdown("""
     /* อิมพอร์ตฟอนต์ Prompt */
     @import url('https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;500;600;700&display=swap');
     
-    /* แก้ปัญหาคำซ้อนทับ: ใช้ line-height จัดระยะบรรทัด โดยไม่จำกัดขนาดฟอนต์ (font-size) ให้กลับไปใช้ขนาดดั้งเดิม */
+    /* แก้ปัญหาคำซ้อนทับ: ใช้ line-height จัดระยะบรรทัด */
     .stMarkdown, .stMarkdown p, .stMarkdown li, .stMarkdown span, .stMarkdown h1, .stMarkdown h2, .stMarkdown h3 {
         font-family: 'Prompt', sans-serif !important;
         line-height: 1.6 !important; 
@@ -109,7 +109,6 @@ st.markdown("""
 # ================= 2. ฟังก์ชันจัดการข้อมูลและคะแนน =================
 def stream_text(text, delay=0.012):
     text = text.replace("*", "") 
-    # แก้ไขการ stream text ให้รองรับการเว้นบรรทัดและช่องว่างอย่างถูกต้อง ป้องกันข้อความกระโดดทับกัน
     chunks = re.split(r'(\s+)', text)
     for chunk in chunks:
         yield chunk
@@ -175,7 +174,6 @@ tab1, tab2 = st.tabs(["🌐 ตรวจสอบจากลิงก์ (URL)"
 
 news_content, original_url, url_input, input_method_used = "", "", "", ""
 
-# 🌟 เอาลิงก์ IG ออกจากการดักจับวิดีโอ เพื่อปล่อยให้ระบบหลังบ้าน (ddinstagram) ทำงาน!
 VIDEO_PATTERNS = [
     r'youtube\.com/watch', r'youtu\.be', r'youtube\.com/shorts', 
     r'tiktok\.com', r'vt\.tiktok\.com', 
@@ -195,19 +193,26 @@ with tab1:
         if url_input:
             input_method_used = "URL Link"
             
-            # 🌟 อัปเกรด: เครื่องกรองอักขระล่องหนจาก iOS (Zero-width / Control characters)
-            # 1. กำจัดอักขระแปลกปลอมที่มองไม่เห็นทั้งหมด
+            # 🌟 อัปเกรดขั้นสุด: แก้ปัญหา iOS/Safari ตัดคำว่า https:// ทิ้งตอนก๊อปปี้ลิงก์
+            # 1. กำจัดอักขระแปลกปลอมทั้งหมด
             clean_url = re.sub(r'[\x00-\x1F\x7F-\x9F\u200B-\u200F\u2028-\u202F\u205F\u3000\uFEFF]', '', url_input).strip()
-            # 2. ดึงมาเฉพาะก้อนที่เป็นลิงก์จริงๆ (ทิ้งข้อความที่อาจแถมมาตอนก็อปปี้)
-            url_match = re.search(r'(https?://[^\s<>"]+)', clean_url)
-            clean_url = url_match.group(1) if url_match else clean_url
+            
+            # 2. ควานหาลิงก์ในข้อความ รองรับทั้งแบบมี http:// และไม่มี
+            url_match = re.search(r'((?:https?://)?(?:www\.)?[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{2,6}\b(?:[-a-zA-Z0-9()@:%_\+.~#?&//=]*))', clean_url)
+            
+            if url_match:
+                clean_url = url_match.group(1)
+                # 3. ไฮไลท์สำคัญ!: ถ้าไม่มี https:// ระบบจะเติมเข้าไปให้เองเพื่อป้องกัน Error ทันที
+                if not clean_url.startswith(('http://', 'https://')):
+                    clean_url = 'https://' + clean_url
+            else:
+                clean_url = url_input 
             
             if any(re.search(pattern, clean_url.lower()) for pattern in VIDEO_PATTERNS):
                 news_content = "VIDEO_DETECTED"
                 original_url = clean_url
             else:
                 with st.spinner("⏳ กำลังเชื่อมต่อและสกัดเนื้อหาจากเว็บไซต์ปลายทาง..."):
-                    # ส่ง clean_url ที่ทำความสะอาดแล้วไปดึงข้อมูล
                     extracted_data = cached_extract_text(clean_url)
                     if isinstance(extracted_data, dict):
                         news_content = extracted_data.get("error", extracted_data.get("content", ""))
@@ -247,7 +252,6 @@ if news_content:
         elif news_content == "GAMBLING_DETECTED":
             st.write("🚫 ตรวจพบเนื้อหาความเสี่ยงสูง")
             result = f"## 📌 1. สรุปประเด็นสำคัญ\nลิงก์เชื่อมโยงไปยังเว็บไซต์การพนันออนไลน์ สแปม หรือเนื้อหาหลอกลวงเกินจริง\n\n## 📊 2. การประเมินระดับความน่าเชื่อถือ\n**ระดับความน่าเชื่อถือ:** ระดับ 1\n\nระบบดำเนินการระงับการเชื่อมต่อเพื่อป้องกันความปลอดภัยของอุปกรณ์ผู้ใช้"
-        # 🌟 ดักข้อผิดพลาดกรณีที่ ddinstagram ล่มหรือไม่สามารถเจาะระบบได้
         elif "ทะลวงระบบ" in news_content or "Error:" in news_content or "SOCIAL_BLOCKED" in news_content:
             st.write("⚠️ ระบบความปลอดภัย: แพลตฟอร์มปลายทางปฏิเสธการเชื่อมต่อ")
             result = f"## 📌 1. สรุปประเด็นสำคัญ\nแพลตฟอร์มโซเชียลมีเดีย (เช่น Instagram) มีระบบป้องกันการดึงข้อมูลอัตโนมัติ ทำให้เซิร์ฟเวอร์ของเราไม่สามารถอ่านข้อความได้ในขณะนี้\n\n## 📊 2. การประเมินระดับความน่าเชื่อถือ\n**ระดับความน่าเชื่อถือ:** N/A\n\n**ข้อแนะนำ:** กรุณาคัดลอกเนื้อหาหรือแคปชั่นจากโซเชียลมีเดีย มาวางด้วยตนเองในแท็บ **'ตรวจสอบจากข้อความ'** แทนการใช้ลิงก์ครับ"
