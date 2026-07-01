@@ -6,11 +6,6 @@ import os
 import csv
 import concurrent.futures
 import threading 
-import urllib.parse 
-import requests 
-
-# 🌟 ย้ายการจับเวลามาไว้บนสุด เพื่อให้นับรวมเวลาดึงข้อมูลเว็บด้วย (แก้ปัญหาภาพลวงตา 0.05 วิ)
-global_start_time = time.time()
 
 # 🌟 สร้างกุญแจล็อกไฟล์ ป้องกันการแย่งเขียน CSV
 csv_lock = threading.Lock() 
@@ -19,9 +14,8 @@ from scraper import extract_text_from_url
 from search import search_news_references
 from llm import analyze_news_with_qwen, generate_search_keywords, classify_content
 
-# 🌟 ปิด Cache สำหรับฟังก์ชันดึงเว็บ ป้องกันปัญหาระบบจำค่า Error (N/A ถาวร)
+@st.cache_data(ttl=3600, show_spinner=False)
 def cached_extract_text(url): return extract_text_from_url(url)
-
 @st.cache_data(ttl=3600, show_spinner=False)
 def cached_classify(text): return classify_content(text)
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -36,20 +30,12 @@ st.set_page_config(page_title="AI Fact-Checker", page_icon="🛡️", layout="ce
 
 st.markdown("""
     <style>
-    /* อิมพอร์ตฟอนต์ Prompt */
     @import url('https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;500;600;700&display=swap');
     
-    /* แก้ปัญหาคำซ้อนทับ */
-    .stMarkdown, .stMarkdown p, .stMarkdown li, .stMarkdown span, .stMarkdown h1, .stMarkdown h2, .stMarkdown h3 {
-        font-family: 'Prompt', sans-serif !important;
-        line-height: 1.6 !important; 
-    }
-    
-    button, input, textarea, label {
+    h1, h2, h3, h4, h5, h6, p, a, button, input, textarea, label, li, span {
         font-family: 'Prompt', sans-serif !important;
     }
     
-    /* ป้องกันฟอนต์ Icon ของระบบถูกเขียนทับ */
     [data-testid="stIconMaterial"], .material-icons, .stIcon {
         font-family: 'Material Symbols Rounded' !important;
     }
@@ -57,7 +43,6 @@ st.markdown("""
     footer {visibility: hidden;} 
     .stAlert {border-radius: 12px;}
     
-    /* ปุ่มกดหลัก */
     .stButton>button {
         border-radius: 8px !important; 
         font-weight: 500 !important;
@@ -73,7 +58,6 @@ st.markdown("""
         opacity: 1 !important;
     }
     
-    /* ลิงก์อ้างอิง */
     .stMarkdown a {
         word-wrap: break-word; overflow-wrap: break-word; word-break: break-all;
         color: #1e40af !important; 
@@ -96,7 +80,9 @@ st.markdown("""
         }
     }
     
-    /* ปุ่มลับ ⚙️ มุมขวาล่าง */
+    div[data-testid="stVerticalBlock"] div[data-testid="stVerticalBlock"] { gap: 1.2rem !important; }
+    p, li { line-height: 1.7 !important; font-size: 1.05rem !important; }
+    
     div[data-testid="stButton"] button[kind="secondary"] {
         position: fixed !important; bottom: 15px !important; right: 15px !important;
         opacity: 0.0 !important; transition: all 0.3s ease-in-out !important;
@@ -115,9 +101,8 @@ st.markdown("""
 # ================= 2. ฟังก์ชันจัดการข้อมูลและคะแนน =================
 def stream_text(text, delay=0.012):
     text = text.replace("*", "") 
-    chunks = re.split(r'(\s+)', text)
-    for chunk in chunks:
-        yield chunk
+    for word in text.split(" "):
+        yield word + " "
         time.sleep(delay)
 
 def extract_score_info(text):
@@ -168,7 +153,7 @@ def save_system_log(input_type, input_data, search_query, references, ai_result,
 
 # ================= 4. ส่วนหัว (Header) =================
 st.markdown("""
-<div style='text-align: center; font-family: "Prompt", sans-serif;'>
+<div style='text-align: center;'>
     <h1 style='font-size: 2.5rem; margin-bottom: 0px;'>🛡️ AI Fact-Checker</h1>
     <p style='font-size: 1.1rem; opacity: 0.8; margin-top: 5px;'>ระบบประเมินความน่าเชื่อถือของข่าว โดยใช้ปัญญาประดิษฐ์</p>
 </div>
@@ -179,17 +164,15 @@ st.write("")
 tab1, tab2 = st.tabs(["🌐 ตรวจสอบจากลิงก์ (URL)", "📄 ตรวจสอบจากข้อความ"])
 
 news_content, original_url, url_input, input_method_used = "", "", "", ""
-
 VIDEO_PATTERNS = [
     r'youtube\.com/watch', r'youtu\.be', r'youtube\.com/shorts', 
     r'tiktok\.com', r'vt\.tiktok\.com', 
-    r'fb\.watch', r'facebook\.com/watch', r'/videos/', r'/reel/', r'/share/v/',
-    r'vimeo\.com', r'dailymotion\.com'
+    r'fb\.watch', r'facebook\.com/watch', r'/videos/', r'vimeo\.com', r'dailymotion\.com'
 ]
 
 with tab1:
     st.write("")
-    url_input = st.text_input("🔗 วางลิงก์ข่าว หรือ โพสต์จากโซเชียลมีเดีย:", placeholder="ตัวอย่าง: https://www.instagram.com/p/...")
+    url_input = st.text_input("🔗 วางลิงก์ข่าว หรือ โพสต์จากโซเชียลมีเดีย:", placeholder="ตัวอย่าง: https://www.facebook.com/...")
     st.write("") 
     
     col_l, col_btn, col_r = st.columns([1, 1, 1])
@@ -199,74 +182,17 @@ with tab1:
     if btn_url:
         if url_input:
             input_method_used = "URL Link"
-            global_start_time = time.time() # รีเซ็ตเวลาใหม่เมื่อกดปุ่ม
-            
-            # =========================================================================
-            # 🌟 ULTIMATE URL EXTRACTOR
-            # =========================================================================
-            raw_input = url_input.strip()
-            raw_input = re.sub(r'[\u200B-\u200F\u2028-\u202F\u2060-\u206F\uFEFF]', '', raw_input)
-            
-            match_http = re.search(r'(https?://[^\s"\'“”‘’«»„<>]+)', raw_input, re.IGNORECASE)
-            if match_http:
-                clean_url = match_http.group(1)
-            else:
-                match_domain = re.search(r'([a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:/[^\s"\'“”‘’«»„<>]*)?)', raw_input)
-                if match_domain:
-                    clean_url = 'https://' + match_domain.group(1)
-                else:
-                    clean_url = raw_input
-                    
-            clean_url = clean_url.strip('\'"“”‘’«»„()[]{}.')
-            if not clean_url.lower().startswith('http'):
-                clean_url = 'https://' + clean_url
-                
-            try:
-                parsed = urllib.parse.urlparse(clean_url)
-                encoded_path = urllib.parse.quote(urllib.parse.unquote(parsed.path), safe="/:@!$&'()*+,;=")
-                encoded_query = urllib.parse.quote(urllib.parse.unquote(parsed.query), safe="/:@!$&'()*+,;=")
-                clean_url = urllib.parse.urlunparse((parsed.scheme, parsed.netloc, encoded_path, parsed.params, encoded_query, parsed.fragment))
-            except Exception:
-                pass
-            # =========================================================================
-            
-            if any(re.search(pattern, clean_url.lower()) for pattern in VIDEO_PATTERNS):
+            if any(re.search(pattern, url_input.lower()) for pattern in VIDEO_PATTERNS):
                 news_content = "VIDEO_DETECTED"
-                original_url = clean_url
+                original_url = url_input
             else:
                 with st.spinner("⏳ กำลังเชื่อมต่อและสกัดเนื้อหาจากเว็บไซต์ปลายทาง..."):
-                    extracted_data = cached_extract_text(clean_url)
-                    
+                    extracted_data = cached_extract_text(url_input)
                     if isinstance(extracted_data, dict):
                         news_content = extracted_data.get("error", extracted_data.get("content", ""))
-                        original_url = extracted_data.get("actual_url", clean_url)
-                    else: 
-                        news_content = str(extracted_data)
-                        
-                    # 🌟 ตรวจสอบว่า content ที่ได้มามีภาษาไทยหรือไม่
-                    has_thai = bool(re.search(r'[ก-๙]', news_content))
-                    
-                    # 🚨 FALLBACK ฉุกเฉินระดับสูง:
-                    # หากไม่มีภาษาไทย (แปลว่าโดนระบบป้องกันของ Facebook/IG ส่งหน้าต่าง Login ภาษาอังกฤษมาขวาง)
-                    if not news_content or str(news_content).strip() == "" or "Error" in news_content or not has_thai:
-                        try:
-                            resp = requests.get(f"https://r.jina.ai/{clean_url}", headers={"Accept": "text/plain", "X-Retain-Images": "none"}, timeout=15)
-                            if resp.status_code == 200 and len(resp.text.strip()) > 50:
-                                jina_text = resp.text
-                                # ถ้า Jina เจาะทะลุได้ข้อมูลภาษาไทยมา ให้สลับไปใช้ของ Jina ทันที
-                                if re.search(r'[ก-๙]', jina_text):
-                                    news_content = jina_text
-                        except Exception:
-                            pass
-
-                    # 🚨 ตรวจสอบขั้นสุดท้าย ถ้าพยายามทุกทางแล้วยังไม่ได้ภาษาไทยมา และเป็นเว็บโซเชียล
-                    has_thai_final = bool(re.search(r'[ก-๙]', news_content))
-                    is_social_link = any(domain in clean_url.lower() for domain in ['facebook', 'instagram', 'tiktok', 'x.com', 'twitter'])
-                    
-                    if news_content and not has_thai_final and is_social_link:
-                        news_content = "SOCIAL_BLOCKED" # แจ้งระบบว่าโดน Social Media บล็อกการเข้าถึง!
-                    elif not news_content or str(news_content).strip() == "":
-                        news_content = "EMPTY_CONTENT"
+                        original_url = extracted_data.get("actual_url", url_input)
+                    else: news_content = str(extracted_data)
+                    if not news_content or str(news_content).strip() == "": news_content = "EMPTY_CONTENT"
         else: st.warning("⚠️ กรุณาระบุ URL ก่อนทำการวิเคราะห์")
 
 with tab2:
@@ -281,13 +207,13 @@ with tab2:
     if btn_text:
         if text_input.strip():
             input_method_used = "Direct Text"
-            global_start_time = time.time() # รีเซ็ตเวลาใหม่เมื่อกดปุ่ม
             news_content = text_input
         else: st.warning("⚠️ กรุณาระบุเนื้อหาก่อนทำการวิเคราะห์")
 
 # ================= 6. ส่วนประมวลผล =================
 if news_content:
     st.divider()
+    start_process_time = time.time()
     months_th = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."]
     now = datetime.datetime.now()
     current_date_str = f"{now.day} {months_th[now.month - 1]} {now.year + 543}"
@@ -300,51 +226,49 @@ if news_content:
         elif news_content == "GAMBLING_DETECTED":
             st.write("🚫 ตรวจพบเนื้อหาความเสี่ยงสูง")
             result = f"## 📌 1. สรุปประเด็นสำคัญ\nลิงก์เชื่อมโยงไปยังเว็บไซต์การพนันออนไลน์ สแปม หรือเนื้อหาหลอกลวงเกินจริง\n\n## 📊 2. การประเมินระดับความน่าเชื่อถือ\n**ระดับความน่าเชื่อถือ:** ระดับ 1\n\nระบบดำเนินการระงับการเชื่อมต่อเพื่อป้องกันความปลอดภัยของอุปกรณ์ผู้ใช้"
+        
         elif "ทะลวงระบบ" in news_content or "Error:" in news_content or "SOCIAL_BLOCKED" in news_content:
-            st.write("⚠️ ระบบความปลอดภัย: แพลตฟอร์มปลายทางปฏิเสธการเชื่อมต่อ")
-            result = f"## 📌 1. สรุปประเด็นสำคัญ\nแพลตฟอร์มโซเชียลมีเดียมีระบบป้องกันการดึงข้อมูลอัตโนมัติ (Anti-bot) หรือต้องล็อกอิน ทำให้ระบบไม่สามารถอ่านข้อความภาษาไทยได้ในขณะนี้\n\n## 📊 2. การประเมินระดับความน่าเชื่อถือ\n**ระดับความน่าเชื่อถือ:** N/A\n\n**ข้อแนะนำ:** กรุณาคัดลอกเนื้อหาหรือแคปชั่นจากโซเชียลมีเดีย มาวางด้วยตนเองในแท็บ **'ตรวจสอบจากข้อความ'** แทนการใช้ลิงก์ครับ"
+            st.write("⚠️ ระบบความปลอดภัย: โซเชียลมีเดียปลายทางปฏิเสธการดึงข้อมูล")
+            result = f"## 📌 1. สรุปประเด็นสำคัญ\nแพลตฟอร์มโซเชียลมีเดียมีระบบป้องกันการดึงข้อมูล (Anti-Scraping) ทำให้เซิร์ฟเวอร์ Cloud ของเราไม่สามารถเข้าถึงข้อความในโพสต์นี้ได้\n\n## 📊 2. การประเมินระดับความน่าเชื่อถือ\n**ระดับความน่าเชื่อถือ:** N/A\n\n**ข้อแนะนำ:** เนื่องจากระบบความปลอดภัยของโซเชียลมีเดีย กรุณาคัดลอกเนื้อหาหรือแคปชั่น มาวางด้วยตนเองในแท็บ **'ตรวจสอบจากข้อความ'** ครับ"
+            
         elif news_content in ["LINK_UNSUPPORTED", "EMPTY_CONTENT"] or "ไม่สามารถดึงข้อมูล" in news_content:
             st.write("⚠️ เว็บไซต์ปลายทางปฏิเสธการเชื่อมต่อ")
-            result = f"## 📌 1. สรุปประเด็นสำคัญ\nเว็บไซต์มีระบบป้องกันการดึงข้อมูลอัตโนมัติ หรือไม่พบเนื้อหาที่เป็นข้อความเพียงพอต่อการวิเคราะห์\n\n## 📊 2. การประเมินระดับความน่าเชื่อถือ\n**ระดับความน่าเชื่อถือ:** N/A\n\nกรุณาคัดลอกเนื้อหาที่ต้องการตรวจสอบ มาวางด้วยตนเองในแท็บ **'ตรวจสอบจากข้อความ'** ครับ"
+            result = f"## 📌 1. สรุปประเด็นสำคัญ\nเว็บไซต์มีระบบป้องกันการดึงข้อมูลอัตโนมัติ (Anti-bot) หรือไม่พบเนื้อหาที่เป็นข้อความเพียงพอต่อการวิเคราะห์\n\n## 📊 2. การประเมินระดับความน่าเชื่อถือ\n**ระดับความน่าเชื่อถือ:** N/A\n\nกรุณาคัดลอกเนื้อหาที่ต้องการตรวจสอบ มาวางด้วยตนเองในแท็บ **'ตรวจสอบจากข้อความ'** ครับ"
         else:
-            news_content_th_check = re.sub(r'[\u4e00-\u9fff]+', '', news_content) 
-            if not re.search(r'[ก-๙]', news_content_th_check):
-                result = f"## 📌 1. สรุปประเด็นสำคัญ\nตรวจไม่พบโครงสร้างภาษาไทยในเนื้อหา\n\n## 📊 2. การประเมินระดับความน่าเชื่อถือ\n**ระดับความน่าเชื่อถือ:** N/A\n\nระบบรองรับการประมวลผลข้อมูลภาษาไทยเป็นหลักครับ"
-            else:
-                st.write("🧠 กำลังวิเคราะห์และจัดหมวดหมู่เนื้อหา...")
-                text_for_keyword = news_content.split("]:\n")[-1] if "[เนื้อหาข่าวจริง" in news_content else news_content
-                
-                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-                    future_classify = executor.submit(cached_classify, text_for_keyword)
-                    future_keywords = executor.submit(cached_generate_keywords, text_for_keyword)
-                    result_type, extracted_reason = future_classify.result()
+            # 🌟 ลบตัวกรองภาษาไทยทิ้งทั้งหมด! ปล่อยให้ข้อความวิ่งตรงเข้า AI เลย
+            st.write("🧠 กำลังวิเคราะห์และจัดหมวดหมู่เนื้อหา...")
+            text_for_keyword = news_content.split("]:\n")[-1] if "[เนื้อหาข่าวจริง" in news_content else news_content
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                future_classify = executor.submit(cached_classify, text_for_keyword)
+                future_keywords = executor.submit(cached_generate_keywords, text_for_keyword)
+                result_type, extracted_reason = future_classify.result()
 
-                    if result_type == "DROP":
-                        st.write(f"⏭️ ยุติการตรวจสอบ: ข้อมูลไม่อยู่ในเงื่อนไขการประเมิน")
-                        search_query = "SKIP_SEARCH"
-                        result = f"## 📌 1. สรุปประเด็นสำคัญ\nไม่พบโครงสร้างของ 'ข้อเท็จจริงที่มีผลกระทบต่อสังคม' ในเนื้อหาที่ระบุ\n\n## 📊 2. การประเมินระดับความน่าเชื่อถือ\n**ระดับความน่าเชื่อถือ:** N/A\n\n{extracted_reason}"
-                    else:
-                        st.write(f"✅ การวิเคราะห์บริบทเสร็จสิ้น: {extracted_reason}")
-                        raw_query = future_keywords.result()
-                        search_query = re.sub(r'[^\w\sก-๙]', ' ', raw_query).strip()
-                        if not search_query: search_query = text_for_keyword[:60].strip()
+                if result_type == "DROP":
+                    st.write(f"⏭️ ยุติการตรวจสอบ: ข้อมูลไม่อยู่ในเงื่อนไขการประเมิน")
+                    search_query = "SKIP_SEARCH"
+                    result = f"## 📌 1. สรุปประเด็นสำคัญ\nไม่พบโครงสร้างของ 'ข้อเท็จจริงที่มีผลกระทบต่อสังคม' ในเนื้อหาที่ระบุ\n\n## 📊 2. การประเมินระดับความน่าเชื่อถือ\n**ระดับความน่าเชื่อถือ:** N/A\n\n{extracted_reason}"
+                else:
+                    st.write(f"✅ การวิเคราะห์บริบทเสร็จสิ้น: {extracted_reason}")
+                    raw_query = future_keywords.result()
+                    search_query = re.sub(r'[^\w\sก-๙]', ' ', raw_query).strip()
+                    if not search_query: search_query = text_for_keyword[:60].strip()
+                    
+                    st.write("🌐 กำลังสืบค้นข้อมูลจากฐานข้อมูลที่น่าเชื่อถือ...")
+                    references = cached_search(search_query)
                         
-                        st.write("🌐 กำลังสืบค้นข้อมูลจากฐานข้อมูลที่น่าเชื่อถือ...")
-                        references = cached_search(search_query)
-                            
-                        st.write("⚖️ กำลังประมวลผลและสร้างบทวิเคราะห์...")
-                        result = cached_analyze(news_content, references, current_date_str)
+                    st.write("⚖️ กำลังประมวลผลและสร้างบทวิเคราะห์...")
+                    result = cached_analyze(news_content, references, current_date_str)
         
-        # 🌟 คำนวณเวลาประมวลผลที่แท้จริงทั้งหมด
-        total_time_taken = round(time.time() - global_start_time, 2)
-        status.update(label=f"ประเมินผลเสร็จสิ้น (ใช้เวลารวม {total_time_taken} วินาที)", state="complete", expanded=False)
+        total_time_taken = round(time.time() - start_process_time, 2)
+        status.update(label=f"ประเมินผลเสร็จสิ้น (ใช้เวลา {total_time_taken} วินาที)", state="complete", expanded=False)
     
     # ================= 7. ส่วนแสดงผลลัพธ์ =================
     
     pct, color, bg_color, border_color, label = extract_score_info(result)
     
     score_card_html = f"""
-    <div style="text-align: center; padding: 25px; background-color: {bg_color}; border-radius: 16px; margin-bottom: 25px; border: 2px solid {border_color}; font-family: 'Prompt', sans-serif;">
+    <div style="text-align: center; padding: 25px; background-color: {bg_color}; border-radius: 16px; margin-bottom: 25px; border: 2px solid {border_color};">
         <p style="margin: 0; font-size: 1.1rem; font-weight: 500; opacity: 0.8;">ผลการประเมินความน่าเชื่อถือโดย AI</p>
         <h1 style="margin: 10px 0; font-size: 5.5rem; color: {color}; font-weight: 700; line-height: 1;">{pct}</h1>
         <span style="background-color: {color}; color: white; padding: 6px 20px; border-radius: 20px; font-weight: 500; font-size: 1.05rem; box-shadow: 0 2px 5px rgba(0,0,0,0.1);">{label}</span>
