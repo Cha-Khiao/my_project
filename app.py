@@ -30,20 +30,35 @@ st.set_page_config(page_title="AI Fact-Checker", page_icon="🛡️", layout="ce
 
 st.markdown("""
     <style>
-    /* 🌟 อิมพอร์ตฟอนต์ "Prompt" */
+    /* อิมพอร์ตฟอนต์ Prompt */
     @import url('https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;500;600;700&display=swap');
     
-    /* 🌟 จำกัดขอบเขตฟอนต์ให้อยู่แค่เนื้อหา ป้องกันเมนูตั้งค่า (Theme) พังและล้นกรอบ */
     h1, h2, h3, h4, h5, h6, p, a, button, input, textarea, label, li {
         font-family: 'Prompt', sans-serif !important;
     }
     
-    /* 🌟 ป้องกันฟอนต์ Icon ของระบบถูกเขียนทับ (แก้บั๊กคำว่า 'check' โผล่มาซ้อน) */
     [data-testid="stIconMaterial"], .material-icons, .stIcon {
         font-family: 'Material Symbols Rounded' !important;
     }
     
-    footer {visibility: hidden;} 
+    /* 🌟 1. ปิดการแสดงผล Footer แบบดั้งเดิม */
+    footer {visibility: hidden !important; display: none !important;} 
+    
+    /* 🌟 2. คำสั่งมหาประลัย: ซ่อนลายน้ำ Hosted with Streamlit และ GitHub (มุมขวาล่าง) */
+    .viewerBadge_container, 
+    .viewerBadge_link, 
+    #viewerBadge_container,
+    a[href^="https://streamlit.io/cloud"] {
+        display: none !important;
+        visibility: hidden !important;
+        opacity: 0 !important;
+    }
+    
+    /* 🌟 3. ซ่อนปุ่ม Deploy (จรวด) ด้านบนขวา แต่เก็บ 3 จุดไว้ให้สลับโหมดสว่าง/มืดได้ */
+    .stAppDeployButton {
+        display: none !important;
+    }
+    
     .stAlert {border-radius: 12px;}
     
     /* ปุ่มกดหลัก */
@@ -88,7 +103,7 @@ st.markdown("""
     div[data-testid="stVerticalBlock"] div[data-testid="stVerticalBlock"] { gap: 1.2rem !important; }
     p, li { line-height: 1.7 !important; font-size: 1.05rem !important; }
     
-    /* ปุ่มลับ ⚙️ มุมขวาล่าง */
+    /* ปุ่มลับ ⚙️ มุมขวาล่าง (จะไม่โดนลายน้ำบังแล้ว) */
     div[data-testid="stButton"] button[kind="secondary"] {
         position: fixed !important; bottom: 15px !important; right: 15px !important;
         opacity: 0.0 !important; transition: all 0.3s ease-in-out !important;
@@ -263,8 +278,7 @@ if news_content:
                         result = cached_analyze(news_content, references, current_date_str)
         
         total_time_taken = round(time.time() - start_process_time, 2)
-        # 🌟 แก้ไขเอา ✅ ออก ปล่อยให้ Streamlit โชว์แอนิเมชันไอคอนสำเร็จของตัวเอง
-        status.update(label=f"ประเมินผลเสร็จสิ้น (ใช้เวลา {total_time_taken} วินาที)", state="complete", expanded=False)
+        status.update(label=f"✅ ประเมินผลเสร็จสิ้น (ใช้เวลา {total_time_taken} วินาที)", state="complete", expanded=False)
     
     # ================= 7. ส่วนแสดงผลลัพธ์ =================
     
