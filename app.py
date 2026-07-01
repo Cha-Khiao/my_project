@@ -33,7 +33,7 @@ st.markdown("""
     /* อิมพอร์ตฟอนต์ Prompt */
     @import url('https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;500;600;700&display=swap');
     
-    /* แก้ปัญหาคำซ้อนทับ: ใช้ line-height จัดระยะบรรทัด */
+    /* แก้ปัญหาคำซ้อนทับ: ใช้ line-height จัดระยะบรรทัด โดยไม่จำกัดขนาดฟอนต์ (font-size) ให้กลับไปใช้ขนาดดั้งเดิม */
     .stMarkdown, .stMarkdown p, .stMarkdown li, .stMarkdown span, .stMarkdown h1, .stMarkdown h2, .stMarkdown h3 {
         font-family: 'Prompt', sans-serif !important;
         line-height: 1.6 !important; 
@@ -109,6 +109,7 @@ st.markdown("""
 # ================= 2. ฟังก์ชันจัดการข้อมูลและคะแนน =================
 def stream_text(text, delay=0.012):
     text = text.replace("*", "") 
+    # แก้ไขการ stream text ให้รองรับการเว้นบรรทัดและช่องว่างอย่างถูกต้อง ป้องกันข้อความกระโดดทับกัน
     chunks = re.split(r'(\s+)', text)
     for chunk in chunks:
         yield chunk
@@ -193,20 +194,28 @@ with tab1:
         if url_input:
             input_method_used = "URL Link"
             
-            # 🌟 อัปเกรดขั้นสุด: แก้ปัญหา iOS/Safari ตัดคำว่า https:// ทิ้งตอนก๊อปปี้ลิงก์
-            # 1. กำจัดอักขระแปลกปลอมทั้งหมด
-            clean_url = re.sub(r'[\x00-\x1F\x7F-\x9F\u200B-\u200F\u2028-\u202F\u205F\u3000\uFEFF]', '', url_input).strip()
+            # 🌟 อัปเกรดขั้นสุด (V.4): แก้ปัญหา iOS พิมพ์ใหญ่ (Https://) และลิงก์ภาษาไทยถูกตัดขาด
+            # 1. กำจัดอักขระล่องหนจาก iOS
+            raw_url = re.sub(r'[\x00-\x1F\x7F-\x9F\u200B-\u200F\u2028-\u202F\u205F\u3000\uFEFF]', '', url_input).strip()
             
-            # 2. ควานหาลิงก์ในข้อความ รองรับทั้งแบบมี http:// และไม่มี
-            url_match = re.search(r'((?:https?://)?(?:www\.)?[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{2,6}\b(?:[-a-zA-Z0-9()@:%_\+.~#?&//=]*))', clean_url)
+            # 2. ควานหาลิงก์แบบยืดหยุ่น (รองรับภาษาไทย ไม่ตัดคำทิ้ง)
+            clean_url = raw_url
+            for word in raw_url.split():
+                if "." in word and not word.startswith((".", "-", "/")):
+                    clean_url = word
+                    break
+                    
+            clean_url = clean_url.strip("()[]{}<>\"'")
             
-            if url_match:
-                clean_url = url_match.group(1)
-                # 3. ไฮไลท์สำคัญ!: ถ้าไม่มี https:// ระบบจะเติมเข้าไปให้เองเพื่อป้องกัน Error ทันที
-                if not clean_url.startswith(('http://', 'https://')):
-                    clean_url = 'https://' + clean_url
+            # 3. แก้บั๊กมฤตยู 0.05 วิ! (iOS ชอบแอบทำตัว H เป็นพิมพ์ใหญ่)
+            # เช็กอย่างชาญฉลาดโดยไม่สนตัวพิมพ์เล็ก-ใหญ่ 
+            schema_match = re.match(r'^(https?://)(.*)', clean_url, re.IGNORECASE)
+            if schema_match:
+                # ถ้ามีแล้ว บังคับให้เป็นตัวพิมพ์เล็ก (เช่น Https:// -> https://)
+                clean_url = schema_match.group(1).lower() + schema_match.group(2)
             else:
-                clean_url = url_input 
+                # ถ้าไม่มีจริงๆ ค่อยเติม https:// ให้
+                clean_url = 'https://' + clean_url
             
             if any(re.search(pattern, clean_url.lower()) for pattern in VIDEO_PATTERNS):
                 news_content = "VIDEO_DETECTED"
