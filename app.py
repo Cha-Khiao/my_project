@@ -6,7 +6,7 @@ import os
 import csv
 import concurrent.futures
 import threading 
-import urllib.parse # 🌟 เพิ่มไลบรารีจัดการ URL สำหรับ Apple
+import urllib.parse 
 
 # 🌟 สร้างกุญแจล็อกไฟล์ ป้องกันการแย่งเขียน CSV
 csv_lock = threading.Lock() 
@@ -201,7 +201,8 @@ with tab1:
             raw_input = url_input.strip()
             
             # 1. กำจัดอักขระล่องหน (Zero-width) ที่มากับการก๊อปปี้บน iOS 
-            raw_input = re.sub(r'[\x00-\x1F\x7F-\x9F\u200B-\u200F\u2028-\u202F\u2060-\u206F\uFEFF]', '', raw_input)
+            # ⚠️ แก้ไข: เอา \x00-\x1F ออกไป เพื่อป้องกันการเผลอลบ \n และ \r ทำให้ข้อความแถมไม่ติดกับ URL
+            raw_input = re.sub(r'[\u200B-\u200F\u2028-\u202F\u2060-\u206F\uFEFF]', '', raw_input)
             
             # 2. ค้นหาลิงก์แบบถอนรากถอนโคน ทะลวงผ่านคำแถมและ Smart Quotes ของ Apple
             match_http = re.search(r'(https?://[^\s"\'“”‘’«»„<>]+)', raw_input, re.IGNORECASE)
@@ -229,8 +230,9 @@ with tab1:
             # 5. URL Encoding: แปลงภาษาไทยในลิงก์ให้ถูกต้อง ป้องกัน requests พังทันที 
             try:
                 parsed = urllib.parse.urlparse(clean_url)
-                encoded_path = urllib.parse.quote(urllib.parse.unquote(parsed.path), safe='/')
-                encoded_query = urllib.parse.quote(urllib.parse.unquote(parsed.query), safe='=&')
+                # ⚠️ แก้ไข: เพิ่ม safe parameters ควบคุม URL ฝั่ง Apple ให้ปลอดภัยขึ้น ไม่ให้พารามิเตอร์ผิดเพี้ยน
+                encoded_path = urllib.parse.quote(urllib.parse.unquote(parsed.path), safe="/:@!$&'()*+,;=")
+                encoded_query = urllib.parse.quote(urllib.parse.unquote(parsed.query), safe="/:@!$&'()*+,;=")
                 clean_url = urllib.parse.urlunparse((parsed.scheme, parsed.netloc, encoded_path, parsed.params, encoded_query, parsed.fragment))
             except Exception:
                 pass
