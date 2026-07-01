@@ -194,15 +194,21 @@ with tab1:
     if btn_url:
         if url_input:
             input_method_used = "URL Link"
-            if any(re.search(pattern, url_input.lower()) for pattern in VIDEO_PATTERNS):
+            
+            # 🌟 ส่วนที่เพิ่มเข้ามา: สกัดเอาเฉพาะ URL เผื่อกรณีมือถือ/iOS ก๊อปปี้ข้อความอื่นติดมาด้วย
+            url_match = re.search(r'(https?://[^\s]+)', url_input)
+            clean_url = url_match.group(1) if url_match else url_input
+            
+            if any(re.search(pattern, clean_url.lower()) for pattern in VIDEO_PATTERNS):
                 news_content = "VIDEO_DETECTED"
-                original_url = url_input
+                original_url = clean_url
             else:
                 with st.spinner("⏳ กำลังเชื่อมต่อและสกัดเนื้อหาจากเว็บไซต์ปลายทาง..."):
-                    extracted_data = cached_extract_text(url_input)
+                    # 🌟 เปลี่ยนจาก url_input มาใช้ clean_url แทน
+                    extracted_data = cached_extract_text(clean_url)
                     if isinstance(extracted_data, dict):
                         news_content = extracted_data.get("error", extracted_data.get("content", ""))
-                        original_url = extracted_data.get("actual_url", url_input)
+                        original_url = extracted_data.get("actual_url", clean_url)
                     else: news_content = str(extracted_data)
                     if not news_content or str(news_content).strip() == "": news_content = "EMPTY_CONTENT"
         else: st.warning("⚠️ กรุณาระบุ URL ก่อนทำการวิเคราะห์")
