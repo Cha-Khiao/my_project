@@ -30,15 +30,15 @@ st.set_page_config(page_title="AI Fact-Checker", page_icon="🛡️", layout="ce
 
 st.markdown("""
     <style>
-    /* 🌟 อิมพอร์ตฟอนต์ "Prompt" */
+    /* อิมพอร์ตฟอนต์ Prompt */
     @import url('https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;500;600;700&display=swap');
     
-    /* 🌟 จำกัดขอบเขตฟอนต์ให้อยู่แค่เนื้อหา ป้องกันเมนูตั้งค่า (Theme) พังและล้นกรอบ */
-    h1, h2, h3, h4, h5, h6, p, a, button, input, textarea, label, li {
+    /* จำกัดขอบเขตฟอนต์ให้อยู่แค่เนื้อหา ป้องกันเมนูธีมล้นกรอบ */
+    h1, h2, h3, h4, h5, h6, p, a, button, input, textarea, label, li, span {
         font-family: 'Prompt', sans-serif !important;
     }
     
-    /* 🌟 ป้องกันฟอนต์ Icon ของระบบถูกเขียนทับ (แก้บั๊กคำว่า 'check' โผล่มาซ้อน) */
+    /* ป้องกันฟอนต์ Icon ของระบบถูกเขียนทับ (แก้บั๊ก check) */
     [data-testid="stIconMaterial"], .material-icons, .stIcon {
         font-family: 'Material Symbols Rounded' !important;
     }
@@ -46,10 +46,11 @@ st.markdown("""
     footer {visibility: hidden;} 
     .stAlert {border-radius: 12px;}
     
-    /* ปุ่มกดหลัก */
+    /* ปุ่มกดหลัก ให้ขนาดพอดีข้อความ */
     .stButton>button {
         border-radius: 8px !important; 
         font-weight: 500 !important;
+        padding: 0.5rem 2rem !important; 
     }
     div[data-testid="stButton"] button[kind="primary"] {
         background-color: #2563eb !important; 
@@ -84,7 +85,6 @@ st.markdown("""
         }
     }
     
-    /* ปรับระยะห่าง */
     div[data-testid="stVerticalBlock"] div[data-testid="stVerticalBlock"] { gap: 1.2rem !important; }
     p, li { line-height: 1.7 !important; font-size: 1.05rem !important; }
     
@@ -92,8 +92,7 @@ st.markdown("""
     div[data-testid="stButton"] button[kind="secondary"] {
         position: fixed !important; bottom: 15px !important; right: 15px !important;
         opacity: 0.0 !important; transition: all 0.3s ease-in-out !important;
-        z-index: 99999 !important;
-        width: 45px !important; height: 45px !important;
+        z-index: 99999 !important; width: 45px !important; height: 45px !important;
         border-radius: 50% !important; padding: 0 !important;
         border: none !important; box-shadow: none !important;
     }
@@ -165,23 +164,28 @@ st.markdown("""
     <p style='font-size: 1.1rem; opacity: 0.8; margin-top: 5px;'>ระบบประเมินความน่าเชื่อถือของข่าว โดยใช้ปัญญาประดิษฐ์</p>
 </div>
 """, unsafe_allow_html=True)
-
 st.write("") 
 
 # ================= 5. ส่วนรับข้อมูล =================
 tab1, tab2 = st.tabs(["🌐 ตรวจสอบจากลิงก์ (URL)", "📄 ตรวจสอบจากข้อความ"])
 
 news_content, original_url, url_input, input_method_used = "", "", "", ""
-VIDEO_PATTERNS = [r'youtube\.com/watch', r'youtu\.be', r'tiktok\.com', r'fb\.watch', r'/videos/', r'/reel/', r'/share/v/', r'instagram\.com/reel']
+
+# 🌟 เอาลิงก์ IG ออกจากการดักจับวิดีโอ เพื่อปล่อยให้ระบบหลังบ้าน (ddinstagram) ทำงาน!
+VIDEO_PATTERNS = [
+    r'youtube\.com/watch', r'youtu\.be', r'youtube\.com/shorts', 
+    r'tiktok\.com', r'vt\.tiktok\.com', 
+    r'fb\.watch', r'facebook\.com/watch', r'/videos/', r'vimeo\.com', r'dailymotion\.com'
+]
 
 with tab1:
     st.write("")
-    url_input = st.text_input("🔗 วางลิงก์ข่าว หรือ โพสต์จากโซเชียลมีเดีย:", placeholder="ตัวอย่าง: https://www.facebook.com/...")
+    url_input = st.text_input("🔗 วางลิงก์ข่าว หรือ โพสต์จากโซเชียลมีเดีย:", placeholder="ตัวอย่าง: https://www.instagram.com/p/...")
     st.write("") 
     
-    col_l, col_btn, col_r = st.columns([1.5, 2, 1.5])
+    col_l, col_btn, col_r = st.columns([1, 1, 1])
     with col_btn:
-        btn_url = st.button("🔍 เริ่มการประเมิน", key="btn_url", type="primary", use_container_width=True)
+        btn_url = st.button("🔍 เริ่มการประเมิน", key="btn_url", type="primary")
         
     if btn_url:
         if url_input:
@@ -204,9 +208,9 @@ with tab2:
     text_input = st.text_area("📄 วางข้อความ ข่าวลือ หรือเนื้อหาที่ต้องการตรวจสอบ:", height=150, placeholder="วางเนื้อหาที่น่าสงสัยที่นี่...")
     st.write("") 
     
-    col_l2, col_btn2, col_r2 = st.columns([1.5, 2, 1.5])
+    col_l2, col_btn2, col_r2 = st.columns([1, 1, 1])
     with col_btn2:
-        btn_text = st.button("🔍 เริ่มการประเมิน", key="btn_text", type="primary", use_container_width=True)
+        btn_text = st.button("🔍 เริ่มการประเมิน", key="btn_text", type="primary")
         
     if btn_text:
         if text_input.strip():
@@ -230,6 +234,10 @@ if news_content:
         elif news_content == "GAMBLING_DETECTED":
             st.write("🚫 ตรวจพบเนื้อหาความเสี่ยงสูง")
             result = f"## 📌 1. สรุปประเด็นสำคัญ\nลิงก์เชื่อมโยงไปยังเว็บไซต์การพนันออนไลน์ สแปม หรือเนื้อหาหลอกลวงเกินจริง\n\n## 📊 2. การประเมินระดับความน่าเชื่อถือ\n**ระดับความน่าเชื่อถือ:** ระดับ 1\n\nระบบดำเนินการระงับการเชื่อมต่อเพื่อป้องกันความปลอดภัยของอุปกรณ์ผู้ใช้"
+        # 🌟 ดักข้อผิดพลาดกรณีที่ ddinstagram ล่มหรือไม่สามารถเจาะระบบได้
+        elif "ทะลวงระบบ" in news_content or "Error:" in news_content or "SOCIAL_BLOCKED" in news_content:
+            st.write("⚠️ ระบบความปลอดภัย: แพลตฟอร์มปลายทางปฏิเสธการเชื่อมต่อ")
+            result = f"## 📌 1. สรุปประเด็นสำคัญ\nแพลตฟอร์มโซเชียลมีเดีย (เช่น Instagram) มีระบบป้องกันการดึงข้อมูลอัตโนมัติ ทำให้เซิร์ฟเวอร์ของเราไม่สามารถอ่านข้อความได้ในขณะนี้\n\n## 📊 2. การประเมินระดับความน่าเชื่อถือ\n**ระดับความน่าเชื่อถือ:** N/A\n\n**ข้อแนะนำ:** กรุณาคัดลอกเนื้อหาหรือแคปชั่นจากโซเชียลมีเดีย มาวางด้วยตนเองในแท็บ **'ตรวจสอบจากข้อความ'** แทนการใช้ลิงก์ครับ"
         elif news_content in ["LINK_UNSUPPORTED", "EMPTY_CONTENT"] or "ไม่สามารถดึงข้อมูล" in news_content:
             st.write("⚠️ เว็บไซต์ปลายทางปฏิเสธการเชื่อมต่อ")
             result = f"## 📌 1. สรุปประเด็นสำคัญ\nเว็บไซต์มีระบบป้องกันการดึงข้อมูลอัตโนมัติ (Anti-bot) หรือไม่พบเนื้อหาที่เป็นข้อความเพียงพอต่อการวิเคราะห์\n\n## 📊 2. การประเมินระดับความน่าเชื่อถือ\n**ระดับความน่าเชื่อถือ:** N/A\n\nกรุณาคัดลอกเนื้อหาที่ต้องการตรวจสอบ มาวางด้วยตนเองในแท็บ **'ตรวจสอบจากข้อความ'** ครับ"
@@ -263,7 +271,6 @@ if news_content:
                         result = cached_analyze(news_content, references, current_date_str)
         
         total_time_taken = round(time.time() - start_process_time, 2)
-        # 🌟 แก้ไขเอา ✅ ออก ปล่อยให้ Streamlit โชว์แอนิเมชันไอคอนสำเร็จของตัวเอง
         status.update(label=f"ประเมินผลเสร็จสิ้น (ใช้เวลา {total_time_taken} วินาที)", state="complete", expanded=False)
     
     # ================= 7. ส่วนแสดงผลลัพธ์ =================
