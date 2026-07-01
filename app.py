@@ -7,7 +7,10 @@ import csv
 import concurrent.futures
 import threading 
 import urllib.parse 
-import requests # 🌟 เพิ่มไลบรารี requests สำหรับระบบ Fallback ฉุกเฉิน
+import requests 
+
+# 🌟 ย้ายการจับเวลามาไว้บนสุด เพื่อให้นับรวมเวลาดึงข้อมูลเว็บด้วย (แก้ปัญหาภาพลวงตา 0.05 วิ)
+global_start_time = time.time()
 
 # 🌟 สร้างกุญแจล็อกไฟล์ ป้องกันการแย่งเขียน CSV
 csv_lock = threading.Lock() 
@@ -196,17 +199,15 @@ with tab1:
     if btn_url:
         if url_input:
             input_method_used = "URL Link"
+            global_start_time = time.time() # รีเซ็ตเวลาใหม่เมื่อกดปุ่ม
             
             # =========================================================================
-            # 🌟 ULTIMATE URL EXTRACTOR (รับมือลิงก์เจ้าปัญหาจากฝั่ง iOS/Apple)
+            # 🌟 ULTIMATE URL EXTRACTOR
             # =========================================================================
-            # 1. ทำความสะอาดช่องว่างและลบอักขระล่องหน (Zero-width space) ที่ iOS ชอบแถมมา
             raw_input = url_input.strip()
             raw_input = re.sub(r'[\u200B-\u200F\u2028-\u202F\u2060-\u206F\uFEFF]', '', raw_input)
             
-            # 2. ค้นหาเฉพาะ URL ออกมาจากข้อความ (แก้ปัญหาการ copy แล้วมีข้อความติดมา)
             match_http = re.search(r'(https?://[^\s"\'“”‘’«»„<>]+)', raw_input, re.IGNORECASE)
-            
             if match_http:
                 clean_url = match_http.group(1)
             else:
@@ -216,14 +217,10 @@ with tab1:
                 else:
                     clean_url = raw_input
                     
-            # 3. ลบอักขระแปลกปลอมที่มักจะติดมาท้ายสุดของ URL
             clean_url = clean_url.strip('\'"“”‘’«»„()[]{}.')
-            
-            # 4. บังคับ URL Scheme ให้ถูกต้อง
             if not clean_url.lower().startswith('http'):
                 clean_url = 'https://' + clean_url
                 
-            # 5. ซ่อมแซม URL Encoding เพื่อป้องกัน Requests พังทันที
             try:
                 parsed = urllib.parse.urlparse(clean_url)
                 encoded_path = urllib.parse.quote(urllib.parse.unquote(parsed.path), safe="/:@!$&'()*+,;=")
@@ -246,18 +243,30 @@ with tab1:
                     else: 
                         news_content = str(extracted_data)
                         
-                    # 🚨 FALLBACK ฉุกเฉิน: 
-                    # ถ้าลิงก์แชร์จากแอปมือถือ (Mobile Share Link) ส่งค่ากลับมาเป็นค่าว่าง (คืนค่าใน 0.05 วิ) 
-                    # ให้ Jina Reader ทะลวงเข้าดึงข้อมูลโดยตรงจากหน้าบ้านทันที
-                    if not news_content or str(news_content).strip() == "":
+                    # 🌟 ตรวจสอบว่า content ที่ได้มามีภาษาไทยหรือไม่
+                    has_thai = bool(re.search(r'[ก-๙]', news_content))
+                    
+                    # 🚨 FALLBACK ฉุกเฉินระดับสูง:
+                    # หากไม่มีภาษาไทย (แปลว่าโดนระบบป้องกันของ Facebook/IG ส่งหน้าต่าง Login ภาษาอังกฤษมาขวาง)
+                    if not news_content or str(news_content).strip() == "" or "Error" in news_content or not has_thai:
                         try:
                             resp = requests.get(f"https://r.jina.ai/{clean_url}", headers={"Accept": "text/plain", "X-Retain-Images": "none"}, timeout=15)
                             if resp.status_code == 200 and len(resp.text.strip()) > 50:
-                                news_content = resp.text
-                            else:
-                                news_content = "EMPTY_CONTENT"
+                                jina_text = resp.text
+                                # ถ้า Jina เจาะทะลุได้ข้อมูลภาษาไทยมา ให้สลับไปใช้ของ Jina ทันที
+                                if re.search(r'[ก-๙]', jina_text):
+                                    news_content = jina_text
                         except Exception:
-                            news_content = "EMPTY_CONTENT"
+                            pass
+
+                    # 🚨 ตรวจสอบขั้นสุดท้าย ถ้าพยายามทุกทางแล้วยังไม่ได้ภาษาไทยมา และเป็นเว็บโซเชียล
+                    has_thai_final = bool(re.search(r'[ก-๙]', news_content))
+                    is_social_link = any(domain in clean_url.lower() for domain in ['facebook', 'instagram', 'tiktok', 'x.com', 'twitter'])
+                    
+                    if news_content and not has_thai_final and is_social_link:
+                        news_content = "SOCIAL_BLOCKED" # แจ้งระบบว่าโดน Social Media บล็อกการเข้าถึง!
+                    elif not news_content or str(news_content).strip() == "":
+                        news_content = "EMPTY_CONTENT"
         else: st.warning("⚠️ กรุณาระบุ URL ก่อนทำการวิเคราะห์")
 
 with tab2:
@@ -272,13 +281,13 @@ with tab2:
     if btn_text:
         if text_input.strip():
             input_method_used = "Direct Text"
+            global_start_time = time.time() # รีเซ็ตเวลาใหม่เมื่อกดปุ่ม
             news_content = text_input
         else: st.warning("⚠️ กรุณาระบุเนื้อหาก่อนทำการวิเคราะห์")
 
 # ================= 6. ส่วนประมวลผล =================
 if news_content:
     st.divider()
-    start_process_time = time.time()
     months_th = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."]
     now = datetime.datetime.now()
     current_date_str = f"{now.day} {months_th[now.month - 1]} {now.year + 543}"
@@ -293,10 +302,10 @@ if news_content:
             result = f"## 📌 1. สรุปประเด็นสำคัญ\nลิงก์เชื่อมโยงไปยังเว็บไซต์การพนันออนไลน์ สแปม หรือเนื้อหาหลอกลวงเกินจริง\n\n## 📊 2. การประเมินระดับความน่าเชื่อถือ\n**ระดับความน่าเชื่อถือ:** ระดับ 1\n\nระบบดำเนินการระงับการเชื่อมต่อเพื่อป้องกันความปลอดภัยของอุปกรณ์ผู้ใช้"
         elif "ทะลวงระบบ" in news_content or "Error:" in news_content or "SOCIAL_BLOCKED" in news_content:
             st.write("⚠️ ระบบความปลอดภัย: แพลตฟอร์มปลายทางปฏิเสธการเชื่อมต่อ")
-            result = f"## 📌 1. สรุปประเด็นสำคัญ\nแพลตฟอร์มโซเชียลมีเดีย (เช่น Instagram) มีระบบป้องกันการดึงข้อมูลอัตโนมัติ ทำให้เซิร์ฟเวอร์ของเราไม่สามารถอ่านข้อความได้ในขณะนี้\n\n## 📊 2. การประเมินระดับความน่าเชื่อถือ\n**ระดับความน่าเชื่อถือ:** N/A\n\n**ข้อแนะนำ:** กรุณาคัดลอกเนื้อหาหรือแคปชั่นจากโซเชียลมีเดีย มาวางด้วยตนเองในแท็บ **'ตรวจสอบจากข้อความ'** แทนการใช้ลิงก์ครับ"
+            result = f"## 📌 1. สรุปประเด็นสำคัญ\nแพลตฟอร์มโซเชียลมีเดียมีระบบป้องกันการดึงข้อมูลอัตโนมัติ (Anti-bot) หรือต้องล็อกอิน ทำให้ระบบไม่สามารถอ่านข้อความภาษาไทยได้ในขณะนี้\n\n## 📊 2. การประเมินระดับความน่าเชื่อถือ\n**ระดับความน่าเชื่อถือ:** N/A\n\n**ข้อแนะนำ:** กรุณาคัดลอกเนื้อหาหรือแคปชั่นจากโซเชียลมีเดีย มาวางด้วยตนเองในแท็บ **'ตรวจสอบจากข้อความ'** แทนการใช้ลิงก์ครับ"
         elif news_content in ["LINK_UNSUPPORTED", "EMPTY_CONTENT"] or "ไม่สามารถดึงข้อมูล" in news_content:
             st.write("⚠️ เว็บไซต์ปลายทางปฏิเสธการเชื่อมต่อ")
-            result = f"## 📌 1. สรุปประเด็นสำคัญ\nเว็บไซต์มีระบบป้องกันการดึงข้อมูลอัตโนมัติ (Anti-bot) หรือไม่พบเนื้อหาที่เป็นข้อความเพียงพอต่อการวิเคราะห์\n\n## 📊 2. การประเมินระดับความน่าเชื่อถือ\n**ระดับความน่าเชื่อถือ:** N/A\n\nกรุณาคัดลอกเนื้อหาที่ต้องการตรวจสอบ มาวางด้วยตนเองในแท็บ **'ตรวจสอบจากข้อความ'** ครับ"
+            result = f"## 📌 1. สรุปประเด็นสำคัญ\nเว็บไซต์มีระบบป้องกันการดึงข้อมูลอัตโนมัติ หรือไม่พบเนื้อหาที่เป็นข้อความเพียงพอต่อการวิเคราะห์\n\n## 📊 2. การประเมินระดับความน่าเชื่อถือ\n**ระดับความน่าเชื่อถือ:** N/A\n\nกรุณาคัดลอกเนื้อหาที่ต้องการตรวจสอบ มาวางด้วยตนเองในแท็บ **'ตรวจสอบจากข้อความ'** ครับ"
         else:
             news_content_th_check = re.sub(r'[\u4e00-\u9fff]+', '', news_content) 
             if not re.search(r'[ก-๙]', news_content_th_check):
@@ -326,8 +335,9 @@ if news_content:
                         st.write("⚖️ กำลังประมวลผลและสร้างบทวิเคราะห์...")
                         result = cached_analyze(news_content, references, current_date_str)
         
-        total_time_taken = round(time.time() - start_process_time, 2)
-        status.update(label=f"ประเมินผลเสร็จสิ้น (ใช้เวลา {total_time_taken} วินาที)", state="complete", expanded=False)
+        # 🌟 คำนวณเวลาประมวลผลที่แท้จริงทั้งหมด
+        total_time_taken = round(time.time() - global_start_time, 2)
+        status.update(label=f"ประเมินผลเสร็จสิ้น (ใช้เวลารวม {total_time_taken} วินาที)", state="complete", expanded=False)
     
     # ================= 7. ส่วนแสดงผลลัพธ์ =================
     
