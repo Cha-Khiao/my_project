@@ -7,6 +7,7 @@ import csv
 import concurrent.futures
 import threading 
 import urllib.parse 
+import requests # 🌟 เพิ่มไลบรารี requests สำหรับระบบ Fallback ฉุกเฉิน
 
 # 🌟 สร้างกุญแจล็อกไฟล์ ป้องกันการแย่งเขียน CSV
 csv_lock = threading.Lock() 
@@ -179,7 +180,8 @@ news_content, original_url, url_input, input_method_used = "", "", "", ""
 VIDEO_PATTERNS = [
     r'youtube\.com/watch', r'youtu\.be', r'youtube\.com/shorts', 
     r'tiktok\.com', r'vt\.tiktok\.com', 
-    r'fb\.watch', r'facebook\.com/watch', r'/videos/', r'vimeo\.com', r'dailymotion\.com'
+    r'fb\.watch', r'facebook\.com/watch', r'/videos/', r'/reel/', r'/share/v/',
+    r'vimeo\.com', r'dailymotion\.com'
 ]
 
 with tab1:
@@ -196,15 +198,13 @@ with tab1:
             input_method_used = "URL Link"
             
             # =========================================================================
-            # 🌟 ULTIMATE URL EXTRACTOR (อัปเกรดแก้ปัญหา Apple/iOS Clipboard + URL Encoding)
+            # 🌟 ULTIMATE URL EXTRACTOR (รับมือลิงก์เจ้าปัญหาจากฝั่ง iOS/Apple)
             # =========================================================================
+            # 1. ทำความสะอาดช่องว่างและลบอักขระล่องหน (Zero-width space) ที่ iOS ชอบแถมมา
             raw_input = url_input.strip()
-            
-            # 1. กำจัดอักขระล่องหน (Zero-width) ที่มากับการก๊อปปี้บน iOS 
-            # ⚠️ แก้ไข: เอา \x00-\x1F ออกไป เพื่อป้องกันการเผลอลบ \n และ \r ทำให้ข้อความแถมไม่ติดกับ URL
             raw_input = re.sub(r'[\u200B-\u200F\u2028-\u202F\u2060-\u206F\uFEFF]', '', raw_input)
             
-            # 2. ค้นหาลิงก์แบบถอนรากถอนโคน ทะลวงผ่านคำแถมและ Smart Quotes ของ Apple
+            # 2. ค้นหาเฉพาะ URL ออกมาจากข้อความ (แก้ปัญหาการ copy แล้วมีข้อความติดมา)
             match_http = re.search(r'(https?://[^\s"\'“”‘’«»„<>]+)', raw_input, re.IGNORECASE)
             
             if match_http:
@@ -216,21 +216,16 @@ with tab1:
                 else:
                     clean_url = raw_input
                     
-            # 3. ลบเครื่องหมายคำพูดหรือวงเล็บที่อาจติดมาท้ายลิงก์ 
-            clean_url = clean_url.strip('\'"“”‘’«»„()[]{}')
+            # 3. ลบอักขระแปลกปลอมที่มักจะติดมาท้ายสุดของ URL
+            clean_url = clean_url.strip('\'"“”‘’«»„()[]{}.')
             
-            # 4. บังคับ scheme ให้เป็นพิมพ์เล็กเท่านั้น
-            if clean_url.lower().startswith('http://'):
-                clean_url = 'http://' + clean_url[7:]
-            elif clean_url.lower().startswith('https://'):
-                clean_url = 'https://' + clean_url[8:]
-            elif not clean_url.lower().startswith('http'):
+            # 4. บังคับ URL Scheme ให้ถูกต้อง
+            if not clean_url.lower().startswith('http'):
                 clean_url = 'https://' + clean_url
                 
-            # 5. URL Encoding: แปลงภาษาไทยในลิงก์ให้ถูกต้อง ป้องกัน requests พังทันที 
+            # 5. ซ่อมแซม URL Encoding เพื่อป้องกัน Requests พังทันที
             try:
                 parsed = urllib.parse.urlparse(clean_url)
-                # ⚠️ แก้ไข: เพิ่ม safe parameters ควบคุม URL ฝั่ง Apple ให้ปลอดภัยขึ้น ไม่ให้พารามิเตอร์ผิดเพี้ยน
                 encoded_path = urllib.parse.quote(urllib.parse.unquote(parsed.path), safe="/:@!$&'()*+,;=")
                 encoded_query = urllib.parse.quote(urllib.parse.unquote(parsed.query), safe="/:@!$&'()*+,;=")
                 clean_url = urllib.parse.urlunparse((parsed.scheme, parsed.netloc, encoded_path, parsed.params, encoded_query, parsed.fragment))
@@ -244,11 +239,25 @@ with tab1:
             else:
                 with st.spinner("⏳ กำลังเชื่อมต่อและสกัดเนื้อหาจากเว็บไซต์ปลายทาง..."):
                     extracted_data = cached_extract_text(clean_url)
+                    
                     if isinstance(extracted_data, dict):
                         news_content = extracted_data.get("error", extracted_data.get("content", ""))
                         original_url = extracted_data.get("actual_url", clean_url)
-                    else: news_content = str(extracted_data)
-                    if not news_content or str(news_content).strip() == "": news_content = "EMPTY_CONTENT"
+                    else: 
+                        news_content = str(extracted_data)
+                        
+                    # 🚨 FALLBACK ฉุกเฉิน: 
+                    # ถ้าลิงก์แชร์จากแอปมือถือ (Mobile Share Link) ส่งค่ากลับมาเป็นค่าว่าง (คืนค่าใน 0.05 วิ) 
+                    # ให้ Jina Reader ทะลวงเข้าดึงข้อมูลโดยตรงจากหน้าบ้านทันที
+                    if not news_content or str(news_content).strip() == "":
+                        try:
+                            resp = requests.get(f"https://r.jina.ai/{clean_url}", headers={"Accept": "text/plain", "X-Retain-Images": "none"}, timeout=15)
+                            if resp.status_code == 200 and len(resp.text.strip()) > 50:
+                                news_content = resp.text
+                            else:
+                                news_content = "EMPTY_CONTENT"
+                        except Exception:
+                            news_content = "EMPTY_CONTENT"
         else: st.warning("⚠️ กรุณาระบุ URL ก่อนทำการวิเคราะห์")
 
 with tab2:
