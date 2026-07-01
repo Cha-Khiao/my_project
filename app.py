@@ -109,7 +109,6 @@ st.markdown("""
 # ================= 2. ฟังก์ชันจัดการข้อมูลและคะแนน =================
 def stream_text(text, delay=0.012):
     text = text.replace("*", "") 
-    # แก้ไขการ stream text ให้รองรับการเว้นบรรทัดและช่องว่างอย่างถูกต้อง ป้องกันข้อความกระโดดทับกัน
     chunks = re.split(r'(\s+)', text)
     for chunk in chunks:
         yield chunk
@@ -194,28 +193,33 @@ with tab1:
         if url_input:
             input_method_used = "URL Link"
             
-            # 🌟 อัปเกรดขั้นสุด (V.4): แก้ปัญหา iOS พิมพ์ใหญ่ (Https://) และลิงก์ภาษาไทยถูกตัดขาด
-            # 1. กำจัดอักขระล่องหนจาก iOS
-            raw_url = re.sub(r'[\x00-\x1F\x7F-\x9F\u200B-\u200F\u2028-\u202F\u205F\u3000\uFEFF]', '', url_input).strip()
+            # =========================================================================
+            # 🌟 ULTIMATE URL EXTRACTOR (แก้ปัญหา Python Crash จาก iOS/Android Clipboard)
+            # =========================================================================
+            raw_input = url_input.strip()
             
-            # 2. ควานหาลิงก์แบบยืดหยุ่น (รองรับภาษาไทย ไม่ตัดคำทิ้ง)
-            clean_url = raw_url
-            for word in raw_url.split():
-                if "." in word and not word.startswith((".", "-", "/")):
-                    clean_url = word
-                    break
-                    
-            clean_url = clean_url.strip("()[]{}<>\"'")
+            # 1. ค้นหาลิงก์แบบถอนรากถอนโคน ทะลวงผ่านคำแถมและ Smart Quotes
+            match_http = re.search(r'(https?://[^\s"\'“”‘’«»„]+)', raw_input, re.IGNORECASE)
             
-            # 3. แก้บั๊กมฤตยู 0.05 วิ! (iOS ชอบแอบทำตัว H เป็นพิมพ์ใหญ่)
-            # เช็กอย่างชาญฉลาดโดยไม่สนตัวพิมพ์เล็ก-ใหญ่ 
-            schema_match = re.match(r'^(https?://)(.*)', clean_url, re.IGNORECASE)
-            if schema_match:
-                # ถ้ามีแล้ว บังคับให้เป็นตัวพิมพ์เล็ก (เช่น Https:// -> https://)
-                clean_url = schema_match.group(1).lower() + schema_match.group(2)
+            if match_http:
+                clean_url = match_http.group(1)
             else:
-                # ถ้าไม่มีจริงๆ ค่อยเติม https:// ให้
-                clean_url = 'https://' + clean_url
+                # 2. ถ้าผู้ใช้ไม่ได้พิมพ์ http ระบบจะควานหาโดเมนแทน
+                match_domain = re.search(r'([a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:/[^\s"\'“”‘’«»„]*)?)', raw_input)
+                if match_domain:
+                    clean_url = 'https://' + match_domain.group(1)
+                else:
+                    clean_url = raw_input
+                    
+            # 3. กำจัดอักขระล่องหน (Zero-width), เครื่องหมายคำพูดทุกภาษา, และช่องว่างแปลกๆ ที่ทำให้ requests พังใน 0.05วิ
+            clean_url = re.sub(r'["\'“”‘’«»„\x00-\x1F\u200B-\u200F\u2028-\u202F\uFEFF]', '', clean_url)
+            
+            # 4. บังคับ scheme ให้เป็นพิมพ์เล็กเท่านั้น (ป้องกัน Https://)
+            if clean_url.lower().startswith('http://'):
+                clean_url = 'http://' + clean_url[7:]
+            elif clean_url.lower().startswith('https://'):
+                clean_url = 'https://' + clean_url[8:]
+            # =========================================================================
             
             if any(re.search(pattern, clean_url.lower()) for pattern in VIDEO_PATTERNS):
                 news_content = "VIDEO_DETECTED"
