@@ -10,7 +10,6 @@ import concurrent.futures
 # ================= สร้าง Session ที่สามารถ Retry ตัวเองได้ =================
 def get_retry_session():
     session = requests.Session()
-    # ถ้าเจอ Error เหล่านี้ ให้พยายามต่อใหม่สูงสุด 3 ครั้ง
     retry = Retry(total=3, backoff_factor=0.5, status_forcelist=[429, 500, 502, 503, 504])
     adapter = HTTPAdapter(max_retries=retry)
     session.mount('http://', adapter)
@@ -34,7 +33,9 @@ def is_valid_news_title(title: str, query: str = "") -> bool:
         core_words = [w for w in query_words if len(w) > 2]
         if core_words:
             match = any(word.lower() in title.lower() for word in core_words)
-            if not match: return False
+            # 🛠️ เพิ่มความยืดหยุ่น: ถ้าคีย์เวิร์ดรวมมาเป็นคำยาวๆ คำเดียว ให้ยอมผ่านไปเพื่อให้ AI เป็นตัวตัดสินเอง
+            if not match and len(core_words) > 1: 
+                return False
             
     return True
 
@@ -57,15 +58,14 @@ def search_news_references(query: str, num_results: int = 5) -> list:
         'today.line.me', 'bbc.com/thai', 'voicetv.co.th', 'dw.com/th'
     ]
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    
-    # ใช้ Session ที่สร้างขึ้น แทน requests ธรรมดา
     session = get_retry_session()
 
     def fetch_google():
         res = []
         try:
             rss_url = f"https://news.google.com/rss/search?q={quote(query)}&hl=th&gl=TH&ceid=TH:th"
-            res_rss = session.get(rss_url, headers=headers, timeout=10)
+            # 🛠️ ลด timeout ลงจาก 10 เหลือ 8 วินาที เพื่อให้แสดงผลรวมเร็วขึ้น
+            res_rss = session.get(rss_url, headers=headers, timeout=8)
             if res_rss.status_code == 200:
                 root = ET.fromstring(res_rss.content)
                 for item in root.findall('.//item'):
@@ -80,7 +80,8 @@ def search_news_references(query: str, num_results: int = 5) -> list:
         res = []
         try:
             ddg_url = f"https://html.duckduckgo.com/html/?q={quote(query + ' ข่าว')}"
-            res_ddg = session.get(ddg_url, headers=headers, timeout=12)
+            # 🛠️ ลด timeout ลงจาก 12 เหลือ 8 วินาที
+            res_ddg = session.get(ddg_url, headers=headers, timeout=8)
             if res_ddg.status_code == 200:
                 soup = BeautifulSoup(res_ddg.text, 'html.parser')
                 for div in soup.find_all('div', class_='result__body'):
@@ -103,7 +104,8 @@ def search_news_references(query: str, num_results: int = 5) -> list:
         res = []
         try:
             web_url = f"https://www.bing.com/search?q={quote(query + ' ข่าว')}"
-            res_web = session.get(web_url, headers=headers, timeout=12)
+            # 🛠️ ลด timeout ลงจาก 12 เหลือ 8 วินาที
+            res_web = session.get(web_url, headers=headers, timeout=8)
             if res_web.status_code == 200:
                 soup = BeautifulSoup(res_web.text, 'html.parser')
                 for li in soup.find_all('li', class_='b_algo'):
@@ -124,7 +126,6 @@ def search_news_references(query: str, num_results: int = 5) -> list:
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
         futures = [executor.submit(fetch_google), executor.submit(fetch_ddg), executor.submit(fetch_bing)]
         
-        # รอรับผลจากทุกแหล่งรวมกันก่อน เพื่อความสม่ำเสมอของผลลัพธ์
         for future in concurrent.futures.as_completed(futures):
             engine_results = future.result()
             for item in engine_results:
@@ -132,5 +133,4 @@ def search_news_references(query: str, num_results: int = 5) -> list:
                     urls_seen.add(item['href'])
                     results.append(item)
                     
-    # คืนค่า 5 อันดับแรก หลังจากรวมผลเสร็จสิ้น (ป้องกันอาการเจออ้างอิง 0-1-5 สลับไปมา)
     return results[:num_results]

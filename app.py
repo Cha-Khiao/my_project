@@ -182,15 +182,20 @@ with tab1:
     if btn_url:
         if url_input:
             input_method_used = "URL Link"
-            if any(re.search(pattern, url_input.lower()) for pattern in VIDEO_PATTERNS):
+            
+            # 🛠️ ระบบป้องกันข้อความขยะจากมือถือ: สกัดเฉพาะลิงก์ออกมา 
+            url_match = re.search(r'(https?://[^\s]+)', url_input)
+            clean_url = url_match.group(1) if url_match else url_input
+            
+            if any(re.search(pattern, clean_url.lower()) for pattern in VIDEO_PATTERNS):
                 news_content = "VIDEO_DETECTED"
-                original_url = url_input
+                original_url = clean_url
             else:
                 with st.spinner("⏳ กำลังเชื่อมต่อและสกัดเนื้อหาจากเว็บไซต์ปลายทาง..."):
-                    extracted_data = cached_extract_text(url_input)
+                    extracted_data = cached_extract_text(clean_url)
                     if isinstance(extracted_data, dict):
                         news_content = extracted_data.get("error", extracted_data.get("content", ""))
-                        original_url = extracted_data.get("actual_url", url_input)
+                        original_url = extracted_data.get("actual_url", clean_url)
                     else: news_content = str(extracted_data)
                     if not news_content or str(news_content).strip() == "": news_content = "EMPTY_CONTENT"
         else: st.warning("⚠️ กรุณาระบุ URL ก่อนทำการวิเคราะห์")
@@ -235,7 +240,6 @@ if news_content:
             st.write("⚠️ เว็บไซต์ปลายทางปฏิเสธการเชื่อมต่อ")
             result = f"## 📌 1. สรุปประเด็นสำคัญ\nเว็บไซต์มีระบบป้องกันการดึงข้อมูลอัตโนมัติ (Anti-bot) หรือไม่พบเนื้อหาที่เป็นข้อความเพียงพอต่อการวิเคราะห์\n\n## 📊 2. การประเมินระดับความน่าเชื่อถือ\n**ระดับความน่าเชื่อถือ:** N/A\n\nกรุณาคัดลอกเนื้อหาที่ต้องการตรวจสอบ มาวางด้วยตนเองในแท็บ **'ตรวจสอบจากข้อความ'** ครับ"
         else:
-            # 🌟 ลบตัวกรองภาษาไทยทิ้งทั้งหมด! ปล่อยให้ข้อความวิ่งตรงเข้า AI เลย
             st.write("🧠 กำลังวิเคราะห์และจัดหมวดหมู่เนื้อหา...")
             text_for_keyword = news_content.split("]:\n")[-1] if "[เนื้อหาข่าวจริง" in news_content else news_content
             
