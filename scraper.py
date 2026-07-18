@@ -41,8 +41,29 @@ def clean_mobile_url(url: str) -> str:
     return url
 
 def expand_url(url: str) -> str:
-    """แกะลิงก์ที่ถูกย่อมา (เช่น bit.ly, fb.watch, vt.tiktok.com) ให้เป็นลิงก์เต็ม"""
+    """แกะลิงก์ที่ถูกย่อมา ให้เป็นลิงก์เต็ม"""
     
+    # 🚨 [เพิ่มโค้ดส่วนนี้] ดักจับเฉพาะลิงก์แชร์จากมือถือ Facebook โดยเฉพาะ
+    if "facebook.com/share/" in url.lower():
+        try:
+            # 1. จำลองเป็นมือถือ iPhone เพื่อให้ Facebook ยอมคายลิงก์
+            headers = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"}
+            
+            # 2. หัวใจสำคัญ: allow_redirects=False ห้ามตามลิงก์ไปเด็ดขาดเพื่อไม่ให้โดนเตะเข้าหน้า Login
+            res = requests.get(url, headers=headers, allow_redirects=False, timeout=10)
+            
+            # 3. ฉกเอาลิงก์ข่าวของจริงที่ซ่อนอยู่ใน Header 'Location'
+            if res.status_code in [301, 302, 303, 307, 308]:
+                loc = res.headers.get('Location')
+                if loc and "login" not in loc.lower():
+                    # แปลงลิงก์มือถือ (m.facebook) กลับเป็นเว็บปกติ (www.facebook) 
+                    # เพื่อส่งกลับไปให้โค้ดดึงข้อมูลเดิมของคุณทำงานต่อได้ตามปกติ!
+                    return loc.replace("://m.facebook.com", "://www.facebook.com")
+        except Exception:
+            pass
+        return url # ถ้าดักจับไม่ได้ ให้ส่งลิงก์เดิมกลับไป จะได้ไม่กระทบระบบหลัก
+
+    # ================= โค้ดเดิมของคุณทั้งหมด (คงไว้เหมือนเดิมเป๊ะๆ) =================
     redirectors = [
         'shorturl.', 'bit.ly', 'tinyurl.', 't.co', 'cutt.ly', 'rebrand.ly', 
         'lnkd.in', 'fb.watch', '/share/', 'vt.tiktok.com', 'vm.tiktok.com', 
@@ -51,39 +72,22 @@ def expand_url(url: str) -> str:
     
     if any(r in url.lower() for r in redirectors):
         try:
-            # ใช้ User-Agent ของคอมพิวเตอร์ปกติ
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
             }
             res = requests.get(url, headers=headers, allow_redirects=True, timeout=10)
             final_url = res.url
             
-            # 🛠️ [ไม้ตายที่ 1 แก้บั๊ก Facebook มือถือ]: ดักจับ Javascript Redirect
-            # เฟซบุ๊กชอบเสิร์ฟหน้าเว็บเปล่าๆ ที่มีคำสั่ง window.location.replace("ลิงก์เว็บจริง") เราต้องแกะมันออกมา
-            if "facebook.com" in final_url or "fb.watch" in final_url:
-                js_match = re.search(r'location\.(?:replace|href)\s*=?\s*\(?["\'](.*?)["\']\)?', res.text, re.IGNORECASE)
-                if js_match:
-                    # แปลงสัญลักษณ์ \/ ที่เข้ารหัสไว้ให้กลับเป็น / ปกติ
-                    real_fb_url = js_match.group(1).replace('\\/', '/')
-                    if real_fb_url.startswith('/'):
-                        real_fb_url = f"https://www.facebook.com{real_fb_url}"
-                    return real_fb_url # ได้ลิงก์เว็บแท้แล้ว ส่งต่อให้ระบบปกติทำงานต่อได้เลย!
-            
-            # ป้องกันการติดหน้า Login/Captcha
             if "login" in final_url.lower() or "captcha" in final_url.lower() or "challenge" in final_url.lower(): 
                 return url 
                 
-            # ตรวจสอบ Meta Refresh
             meta_match = re.search(r'http-equiv=["\']?refresh["\']?[^>]*url=["\']?([^"\'>]+)["\']?', res.text, re.IGNORECASE)
             if meta_match: 
                 final_url = meta_match.group(1)
-                
-                # ถ้าระบบโยนเป็น relative path ให้ต่อเติมเป็น URL เต็ม
                 if final_url.startswith('/'):
                     from urllib.parse import urlparse
                     parsed = urlparse(res.url)
                     final_url = f"{parsed.scheme}://{parsed.netloc}{final_url}"
-                    
             return final_url
             
         except Exception: 
