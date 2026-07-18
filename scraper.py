@@ -34,7 +34,7 @@ def clean_mobile_url(url: str) -> str:
     return url
 
 def expand_url(url: str) -> str:
-    """แกะลิงก์ที่ถูกย่อมา ให้เป็นลิงก์เต็ม และสกัดลิงก์เว็บจริงจาก Facebook มือถือ"""
+    """แกะลิงก์ที่ถูกย่อมา (เช่น bit.ly, fb.watch, vt.tiktok.com) ให้เป็นลิงก์เต็ม"""
     
     redirectors = [
         'shorturl.', 'bit.ly', 'tinyurl.', 't.co', 'cutt.ly', 'rebrand.ly', 
@@ -44,33 +44,27 @@ def expand_url(url: str) -> str:
     
     if any(r in url.lower() for r in redirectors):
         try:
-            # ใช้ User-Agent ของคอมพิวเตอร์ปกติ (โค้ดเดิมของคุณ)
+            # ใช้ User-Agent ของคอมพิวเตอร์ปกติ (ตามโค้ดเดิมของคุณ)
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
             }
             res = requests.get(url, headers=headers, allow_redirects=True, timeout=10)
             final_url = res.url
             
-            # 1. ดักจับกรณีหน้าเว็บซ่อนลิงก์จริงไว้ใน Javascript (เจอบ่อยในลิงก์มือถือ)
-            js_match = re.search(r'location\.(?:replace|href)\s*=?\s*\(?["\'](.*?)["\']\)?', res.text, re.IGNORECASE)
-            if js_match:
-                js_url = js_match.group(1).replace('\\/', '/')
-                if js_url.startswith('/'):
-                    js_url = f"https://www.facebook.com{js_url}"
-                final_url = js_url
-
-            # 2. 🚨 [หัวใจสำคัญที่เพิ่มเข้ามา] ถ้าโดนเตะไปหน้า Login ให้ "ฉกลิงก์เว็บจริง" ออกมาก่อน!
+            # ป้องกันการติดหน้า Login/Captcha
             if "login" in final_url.lower() or "captcha" in final_url.lower() or "challenge" in final_url.lower(): 
-                if "next=" in final_url:
+                # 🚀 [จุดแก้บั๊กมือถือ]: ถ้าโดนเตะไปหน้า Login ให้ฉกลิงก์เว็บของจริงออกมาจากคำว่า next=
+                if "next=" in final_url and "facebook.com" in final_url:
                     real_url = unquote(final_url.split("next=")[1].split("&")[0])
-                    if "facebook.com" in real_url:
-                        return real_url # ได้ลิงก์เว็บบนคอมพิวเตอร์แบบ 100% แล้วส่งกลับไปเลย!
+                    return real_url.replace("m.facebook.com", "www.facebook.com")
                 return url 
                 
-            # 3. ตรวจสอบ Meta Refresh (โค้ดเดิมของคุณ)
+            # ตรวจสอบ Meta Refresh
             meta_match = re.search(r'http-equiv=["\']?refresh["\']?[^>]*url=["\']?([^"\'>]+)["\']?', res.text, re.IGNORECASE)
             if meta_match: 
                 final_url = meta_match.group(1)
+                
+                # ถ้าระบบโยนเป็น relative path ให้ต่อเติมเป็น URL เต็ม
                 if final_url.startswith('/'):
                     from urllib.parse import urlparse
                     parsed = urlparse(res.url)
