@@ -4,17 +4,21 @@ from bs4 import BeautifulSoup
 from urllib.parse import unquote
 
 def clean_mobile_url(url: str) -> str:
+    # 🛠️ 1. แก้บั๊กลิงก์ซ้อน: จัดการ Redirect URL
+    if "l.facebook.com/l.php?u=" in url:
+        try:
+            url = unquote(url.split("u=")[1].split("&")[0])
+        except Exception:
+            pass
+            
     url = url.replace("://m.facebook.com", "://www.facebook.com")
     url = url.replace("://mobile.twitter.com", "://twitter.com")
-    url = url.replace("://l.facebook.com/l.php?u=", "") 
     
-    if url.startswith("https%3A%2F%2F") or url.startswith("http%3A%2F%2F"):
-        url = unquote(url).split("&h=")[0]
-    
+    # 🛠️ 2. ลบ Tracking Parameters ที่แถมมาจากมือถือ (เพิ่ม s= และ t= ของ X)
     if "?" in url:
         base_url, query_str = url.split("?", 1)
         params = query_str.split("&")
-        clean_params = [p for p in params if not p.startswith(('mibextid=', 'igsh=', 'si=', 'fbclid=', 'is_from_webapp='))]
+        clean_params = [p for p in params if not p.startswith(('mibextid=', 'igsh=', 'si=', 'fbclid=', 'is_from_webapp=', 'h=', 's=', 't='))]
         
         if clean_params:
             url = f"{base_url}?{'&'.join(clean_params)}"
@@ -23,29 +27,36 @@ def clean_mobile_url(url: str) -> str:
             
     return url
 
-def resolve_short_url(url: str) -> str:
-    shorteners = ['shorturl.', 'bit.ly', 'tinyurl.', 't.co', 'cutt.ly', 'rebrand.ly', 'lnkd.in']
-    if any(s in url.lower() for s in shorteners):
+# 🌟 ฟังก์ชันใหม่: จำลองการเข้าผ่านมือถือเพื่อแกะลิงก์สะพาน (/share/) ให้กลายเป็นลิงก์จริง
+def expand_url(url: str) -> str:
+    redirectors = ['shorturl.', 'bit.ly', 'tinyurl.', 't.co', 'cutt.ly', 'rebrand.ly', 'lnkd.in', 'fb.watch', '/share/p/', '/share/v/', '/share/r/', 'vt.tiktok.com', 'vm.tiktok.com', 'youtu.be', 'line.me']
+    
+    if any(r in url.lower() for r in redirectors):
         try:
-            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-            res = requests.get(url, headers=headers, allow_redirects=True, timeout=10)
+            # ใช้ User-Agent ของ iPhone เพื่อหลอกให้ระบบคายลิงก์ Mobile ที่แท้จริงออกมา
+            headers = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"}
+            res = requests.get(url, headers=headers, allow_redirects=True, timeout=12)
             
+            final_url = res.url
+            
+            # ตรวจสอบการซ่อนลิงก์ผ่าน HTML Meta Refresh
             meta_match = re.search(r'http-equiv=["\']?refresh["\']?[^>]*url=["\']?([^"\'>]+)["\']?', res.text, re.IGNORECASE)
-            if meta_match: return meta_match.group(1)
+            if meta_match: 
+                final_url = meta_match.group(1)
                 
+            # ตรวจสอบการซ่อนลิงก์ผ่าน JavaScript
             js_match = re.search(r'window\.location\.(?:href|replace)\s*=\s*["\'](.*?)["\']', res.text, re.IGNORECASE)
-            if js_match: return js_match.group(1)
+            if js_match: 
+                final_url = js_match.group(1)
                 
-            return res.url
+            return final_url
         except Exception:
             pass
     return url
 
 def extract_social_metadata(url: str) -> str:
-    """ดึงแคปชั่นพรีวิวจาก Social Media"""
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"}
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)"}
     try:
-        # 🌟 1. ด่านทะลวง X (Twitter)
         if "x.com/" in url or "twitter.com/" in url:
             match = re.search(r'(?:x|twitter)\.com(/.*)', url)
             if match:
@@ -60,37 +71,27 @@ def extract_social_metadata(url: str) -> str:
                 else:
                     return f"Error: API ของ X ปฏิเสธการดึงข้อมูล ({res.status_code})"
 
-        # 🌟 2. ด่านทะลวง Instagram (อัปเกรด: ใช้ Official Embed ดึงตรง เสถียรที่สุด)
         elif "instagram.com/" in url:
-            # ถอดรหัสหา ID ของโพสต์ (รองรับทั้ง /p/ และ /reel/)
             match = re.search(r'instagram\.com/(?:p|reel|tv)/([^/?]+)', url)
             if match:
                 shortcode = match.group(1)
-                # ดึงข้อมูลผ่านหน้าต่าง Embed ที่ IG อนุญาตให้เข้าถึงสาธารณะ
                 embed_url = f"https://www.instagram.com/p/{shortcode}/embed/captioned/"
                 try:
                     res = requests.get(embed_url, headers=headers, timeout=12)
                     if res.status_code == 200:
                         soup = BeautifulSoup(res.text, 'html.parser')
-                        
-                        # พยายามดึงข้อความจากส่วน Caption
                         caption_div = soup.find(class_='Caption')
                         if caption_div:
-                            # ซ่อนชื่อผู้ใช้งานที่ติดมาตอนต้นข้อความ
                             user_tag = caption_div.find(class_='CaptionUsername')
                             if user_tag: user_tag.extract() 
-                            
                             text = caption_div.get_text(separator='\n', strip=True)
                             if text: return f"โพสต์จาก Instagram:\n{text}"
-                        
-                        # หากเป็นวิดีโอล้วนที่ไม่มีแคปชั่น ลองดึงจาก Meta Description
                         og_desc = soup.find("meta", attrs={"name": "description"}) or soup.find("meta", property="og:description")
                         if og_desc and og_desc.get("content"):
                             return f"โพสต์จาก Instagram:\n{og_desc['content'].strip()}"
                 except Exception:
                     pass
 
-            # แผนสำรอง: ถ้าหน้า Embed มีปัญหา ค่อยวนกลับไปลองใช้ Proxy
             try:
                 match_path = re.search(r'instagram\.com(/.*)', url)
                 if match_path:
@@ -110,18 +111,21 @@ def extract_social_metadata(url: str) -> str:
                                 return f"{title}\n{desc}".strip()
             except Exception:
                 pass
-                
             return "Error: ไม่สามารถทะลวงระบบความปลอดภัยของ Instagram ได้ในขณะนี้"
 
-        # 🌟 3. จัดการเว็บโซเชียลอื่นๆ ทั่วไป
         response = requests.get(url, headers=headers, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        og_title = soup.find("meta", property="og:title")
-        og_desc = soup.find("meta", property="og:description")
+        og_title = soup.find("meta", property="og:title") or soup.find("meta", attrs={"name": "og:title"})
+        og_desc = soup.find("meta", property="og:description") or soup.find("meta", attrs={"name": "og:description"})
         
-        title = og_title["content"] if og_title else ""
+        title = og_title["content"] if og_title else (soup.title.string if soup.title else "")
         desc = og_desc["content"] if og_desc else ""
+        
+        if "facebook.com" in url or "fb.watch" in url:
+            title_lower = title.strip().lower()
+            if not desc and (title_lower == "facebook" or "log in" in title_lower or "เข้าสู่ระบบ" in title_lower):
+                return "Error: Facebook บล็อกด้วยหน้า Login Wall"
         
         return f"{title}\n{desc}".strip()
         
@@ -184,14 +188,19 @@ def fetch_with_fallback(url: str) -> str:
 def extract_text_from_url(url: str) -> dict:
     """ศูนย์กลางสกัดข้อมูล"""
     try:
+        # 🛠️ 1. ล้างขยะรอบแรก
         url = clean_mobile_url(url)
-        url = resolve_short_url(url)
+        
+        # 🛠️ 2. คลายปมลิงก์ (เปลี่ยนลิงก์แชร์จากแอป เป็นลิงก์เว็บปกติ)
+        url = expand_url(url)
+        
+        # 🛠️ 3. ล้างขยะรอบสอง (เพราะหลังจากคลายลิงก์ อาจจะยังมี m.facebook ติดมา)
+        url = clean_mobile_url(url)
         
         VIDEO_PATTERNS = [
             r'youtube\.com/watch', r'youtu\.be', r'youtube\.com/shorts',
-            r'tiktok\.com', r'vt\.tiktok\.com',
-            r'fb\.watch', r'facebook\.com/watch', r'/videos/',
-            r'/share/v/', r'/share/r/', 
+            r'tiktok\.com', r'vt\.tiktok\.com', r'vm\.tiktok\.com',
+            r'facebook\.com/.*/videos/', r'fb\.watch', r'/share/v/', r'/share/r/', 
             r'vimeo\.com', r'dailymotion\.com'
         ]
         

@@ -183,9 +183,9 @@ with tab1:
         if url_input:
             input_method_used = "URL Link"
             
-            # 🛠️ ระบบป้องกันข้อความขยะจากมือถือ: สกัดเฉพาะลิงก์ออกมา 
-            url_match = re.search(r'(https?://[^\s]+)', url_input)
-            clean_url = url_match.group(1) if url_match else url_input
+            # 🛠️ ปรับปรุงขั้นสุด: สกัด URL ตัดขยะ และล้างเครื่องหมายวรรคตอนที่แอปมือถือชอบแถมมาท้ายลิงก์
+            url_match = re.search(r'(https?://[^\s"\'<>\[\]]+)', url_input)
+            clean_url = url_match.group(1).rstrip('.,;!?') if url_match else url_input.strip()
             
             if any(re.search(pattern, clean_url.lower()) for pattern in VIDEO_PATTERNS):
                 news_content = "VIDEO_DETECTED"
