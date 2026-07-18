@@ -41,39 +41,56 @@ def clean_mobile_url(url: str) -> str:
     return url
 
 def expand_url(url: str) -> str:
-    """แกะลิงก์ที่ถูกย่อมา (เช่น bit.ly, fb.watch, vt.tiktok.com) ให้เป็นลิงก์เต็ม"""
+    """แปลงลิงก์ย่อ หรือลิงก์มือถือ (Facebook /share/) ให้กลายเป็นลิงก์เว็บปกติ"""
     
+    # 🚨 [ไม้ตายเฉพาะกิจ] ดักจับลิงก์เว็บจริง ที่ Facebook ซ่อนไว้ในหน้า Login
+    if "facebook.com/share/" in url.lower() or "fb.watch" in url.lower():
+        try:
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+            res = requests.get(url, headers=headers, timeout=10)
+            
+            # วิธีที่ 1: ดึงลิงก์เว็บแท้ จาก URL ของหน้า Login (พารามิเตอร์ next=)
+            if "next=" in res.url:
+                real_url = unquote(res.url.split("next=")[1].split("&")[0])
+                if "facebook.com" in real_url:
+                    return real_url
+                    
+            # วิธีที่ 2: ดึงจากโค้ด HTML เผื่อกรณีมันซ่อนอยู่ใน Source Code
+            match = re.search(r'next=(https%3A%2F%2F[^"\'&]+)', res.text)
+            if match:
+                real_url = unquote(match.group(1))
+                if "facebook.com" in real_url:
+                    return real_url
+        except Exception:
+            pass
+        return url # ถ้าแปลงไม่ได้ให้คืนค่าเดิมไปก่อน
+
+    # ================= ส่วนแกะลิงก์อื่นๆ ทั่วไป (คงไว้เหมือนเดิม) =================
     redirectors = [
         'shorturl.', 'bit.ly', 'tinyurl.', 't.co', 'cutt.ly', 'rebrand.ly', 
-        'lnkd.in', 'fb.watch', '/share/', 'vt.tiktok.com', 'vm.tiktok.com', 
-        'youtu.be', 'line.me', 'today.line.me'
+        'lnkd.in', 'vt.tiktok.com', 'vm.tiktok.com', 'youtu.be', 'line.me', 'today.line.me'
     ]
     
     if any(r in url.lower() for r in redirectors):
         try:
-            # ใช้ User-Agent ของคอมพิวเตอร์ปกติ
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-            }
-            # 🛠️ [แก้บั๊กที่ 2]: ใส่ stream=True ป้องกันการโหลดหน้าเว็บเต็มเพื่อไม่ให้โดนเตะ
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"}
             res = requests.get(url, headers=headers, allow_redirects=True, timeout=10, stream=True)
+            
+            if res.status_code in [403, 401, 503]: 
+                return url 
+                
             final_url = res.url
             
-            # ป้องกันการติดหน้า Login/Captcha
             if "login" in final_url.lower() or "captcha" in final_url.lower() or "challenge" in final_url.lower(): 
                 return url 
                 
-            # ตรวจสอบ Meta Refresh
             meta_match = re.search(r'http-equiv=["\']?refresh["\']?[^>]*url=["\']?([^"\'>]+)["\']?', res.text, re.IGNORECASE)
             if meta_match: 
                 final_url = meta_match.group(1)
-                
-                # ถ้าระบบโยนเป็น relative path ให้ต่อเติมเป็น URL เต็ม
                 if final_url.startswith('/'):
                     from urllib.parse import urlparse
                     parsed = urlparse(res.url)
                     final_url = f"{parsed.scheme}://{parsed.netloc}{final_url}"
-                    
             return final_url
             
         except Exception: 
