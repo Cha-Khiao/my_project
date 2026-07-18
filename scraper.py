@@ -5,6 +5,8 @@ from urllib.parse import unquote, quote
 
 def clean_mobile_url(url: str) -> str:
     """เคลียร์ Tracking และ Redirect ของลิงก์มือถือ"""
+    # 🛠️ [แก้บั๊กที่ 1]: แปลงลิงก์มือถือที่มีภาษาไทยดิบๆ ให้อยู่ในมาตรฐานเดียวกัน
+    url = unquote(url.strip())
     
     # เคลียร์ AMP ของ Google ที่แอปมือถือชอบใช้
     if "google.com/amp/s/" in url:
@@ -39,7 +41,8 @@ def clean_mobile_url(url: str) -> str:
     return url
 
 def expand_url(url: str) -> str:
-    """แกะลิงก์ที่ถูกย่อมา ให้เป็นลิงก์เต็มโดยใช้กุญแจผี (Bot User-Agent)"""
+    """แกะลิงก์ที่ถูกย่อมา (เช่น bit.ly, fb.watch, vt.tiktok.com) ให้เป็นลิงก์เต็ม"""
+    
     redirectors = [
         'shorturl.', 'bit.ly', 'tinyurl.', 't.co', 'cutt.ly', 'rebrand.ly', 
         'lnkd.in', 'fb.watch', '/share/', 'vt.tiktok.com', 'vm.tiktok.com', 
@@ -48,29 +51,30 @@ def expand_url(url: str) -> str:
     
     if any(r in url.lower() for r in redirectors):
         try:
-            # 🔑 กุญแจผี: ปลอมตัวเป็นระบบ Preview ของ WhatsApp/Facebook เพื่อไม่ให้โดนเด้งไปหน้า Login
-            headers = {"User-Agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"}
+            # ใช้ User-Agent ของคอมพิวเตอร์ปกติ
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            }
+            # 🛠️ [แก้บั๊กที่ 2]: ใส่ stream=True ป้องกันการโหลดหน้าเว็บเต็มเพื่อไม่ให้โดนเตะ
+            res = requests.get(url, headers=headers, allow_redirects=True, timeout=10, stream=True)
+            final_url = res.url
             
-            # 🛑 สำคัญมาก: ปิดการตามลิงก์อัตโนมัติ (allow_redirects=False) เพื่อดักจับลิงก์จริงก่อนมันจะเตะเราไปหน้า Login
-            res = requests.get(url, headers=headers, allow_redirects=False, timeout=10)
-            
-            # ถ้าแอปพยายาม Redirect (301, 302) ให้เราฉกเอาลิงก์ปลายทางมาใช้เลย
-            if res.status_code in [301, 302, 303, 307, 308]:
-                loc = res.headers.get('Location')
-                if loc:
-                    if loc.startswith('/'):
-                        from urllib.parse import urlparse
-                        parsed = urlparse(res.url)
-                        loc = f"{parsed.scheme}://{parsed.netloc}{loc}"
-                    return loc
-                    
-            # ถ้าไม่ยอม Redirect ผ่าน Header ลองดึงลิงก์จริงจาก Meta tag 
-            soup = BeautifulSoup(res.text, 'html.parser')
-            og_url = soup.find("meta", property="og:url")
-            if og_url and og_url.get("content") and "login" not in og_url["content"].lower():
-                return og_url["content"]
+            # ป้องกันการติดหน้า Login/Captcha
+            if "login" in final_url.lower() or "captcha" in final_url.lower() or "challenge" in final_url.lower(): 
+                return url 
                 
-            return res.url
+            # ตรวจสอบ Meta Refresh
+            meta_match = re.search(r'http-equiv=["\']?refresh["\']?[^>]*url=["\']?([^"\'>]+)["\']?', res.text, re.IGNORECASE)
+            if meta_match: 
+                final_url = meta_match.group(1)
+                
+                # ถ้าระบบโยนเป็น relative path ให้ต่อเติมเป็น URL เต็ม
+                if final_url.startswith('/'):
+                    from urllib.parse import urlparse
+                    parsed = urlparse(res.url)
+                    final_url = f"{parsed.scheme}://{parsed.netloc}{final_url}"
+                    
+            return final_url
             
         except Exception: 
             pass
@@ -82,11 +86,10 @@ def resolve_short_url(url: str) -> str:
     return expand_url(url) 
 
 def extract_social_metadata(url: str) -> str:
-    """สกัดเฉพาะข้อความ/แคปชั่นจาก Social Media โดยไม่ติด Login Wall"""
+    """สกัดเฉพาะข้อความ/แคปชั่นจาก Social Media"""
     
-    # 🔑 ใช้กุญแจผี ดึงข้อมูล โซเชียลค่ายต่างๆ จะยอมคาย Metadata ให้เสมอ
     headers = {
-        "User-Agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"
+        "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
     }
     
     try:
@@ -158,11 +161,10 @@ def extract_social_metadata(url: str) -> str:
                 
             return "Error: ไม่สามารถทะลวงระบบความปลอดภัยของ Instagram ได้ในขณะนี้"
 
-        # ================= 3. Social Media ทั่วไป (และดักจับ Facebook) =================
+        # ================= 3. Social Media ทั่วไป (และตัวดัก Facebook) =================
         response = requests.get(url, headers=headers, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # ค้นหาข้อความข่าวจาก Open Graph Tags ที่ซ่อนอยู่
         og_title = soup.find("meta", property="og:title") or soup.find("meta", attrs={"name": "og:title"})
         og_desc = soup.find("meta", property="og:description") or soup.find("meta", attrs={"name": "og:description"})
         
@@ -217,14 +219,14 @@ def force_extract_news_link(social_url: str) -> str:
 def fetch_with_fallback(url: str) -> str:
     """ระบบ 3-Layer Bypass สำหรับทะลวงกำแพงเว็บข่าว"""
     
-    # 🛠️ [แก้บั๊กมือถือ]: ปรับรูปแบบคำค้นหาให้เจาะจงเฉพาะประโยค Anti-bot เท่านั้น ลดการเหมารวม
-    anti_bot_patterns = r'(enable javascript and cookies to continue|checking your browser before accessing|cloudflare-nginx|please wait\.\.\. we are checking your browser|checking if the site connection is secure|attention required!\|cloudflare)'
+    anti_bot_patterns = r'(cloudflare|500 internal server error|403 forbidden|access denied|captcha|not acceptable|checking your browser|security check|just a moment)'
     
     def is_valid_text(text):
         clean = text.strip()
-        # 🛠️ ลดเกณฑ์ความยาวเหลือ 30 ตัวอักษร เพื่อให้รองรับข่าวสั้นๆ หรือพาดหัวข่าวจากมือถือได้
+        # 🛠️ [แก้บั๊กที่ 3]: ลดความยาวจาก 50 เหลือ 30 เพื่อให้ผ่านข่าวสั้นบนมือถือได้
         if len(clean) < 30: 
             return False 
+        # ถ้าข้อความสั้นกว่า 800 ตัวอักษร และมีคำว่า Cloudflare อยู่ แสดงว่าโดนบล็อก
         if len(clean) < 800 and re.search(anti_bot_patterns, clean, re.IGNORECASE): 
             return False 
         return True
@@ -253,10 +255,9 @@ def fetch_with_fallback(url: str) -> str:
 
     # ================= [Layer 2]: Jina AI =================
     try:
-        # 🛠️ [แก้บั๊กมือถือ]: เข้ารหัสภาษาไทยใน URL ก่อนส่ง (URL Encoding) สำคัญที่สุดเพื่อไม่ให้ API พัง
+        # 🛠️ [แก้บั๊กที่ 4 - สำคัญที่สุด]: เข้ารหัส URL ภาษาไทยก่อนส่งให้ Jina
         safe_url = quote(url, safe=":/%?=&-_.#")
         jina_url = f"https://r.jina.ai/{safe_url}"
-        
         response = requests.get(jina_url, headers={"Accept": "text/plain", "X-Retain-Images": "none"}, timeout=15)
         
         if response.status_code == 200 and is_valid_text(response.text):
@@ -326,7 +327,8 @@ def extract_text_from_url(url: str) -> dict:
                 if fallback_content: 
                     content = fallback_content
                 else: 
-                    return {"error": content}
+                    # 🛠️ [แก้บั๊กที่ 5]: ลบคำว่า "Error:" ออก เพื่อไม่ให้ UI ตีความว่าโดนบล็อคจากโซเชียลแบบผิดๆ
+                    return {"error": "ไม่สามารถดึงข้อมูลเว็บข่าวได้"}
                 
             hidden_news_url = force_extract_news_link(url)
             if hidden_news_url:
@@ -352,7 +354,7 @@ def extract_text_from_url(url: str) -> dict:
                     return {"error": "GAMBLING_DETECTED"}
                 return {"content": actual_news_content, "actual_url": url}
             else:
-                return {"error": "Error: ไม่สามารถดึงข้อมูลเว็บข่าวได้ หรือเซิร์ฟเวอร์ปฏิเสธการเข้าถึง"}
+                return {"error": "ไม่สามารถดึงข้อมูลเว็บข่าวได้ หรือเซิร์ฟเวอร์ปฏิเสธการเข้าถึง"}
                 
     except Exception as e:
-        return {"error": f"Error: ระบบสกัดข้อมูลขัดข้อง - {str(e)}"}
+        return {"error": "ระบบสกัดข้อมูลขัดข้อง"}
