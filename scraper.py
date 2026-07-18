@@ -41,56 +41,49 @@ def clean_mobile_url(url: str) -> str:
     return url
 
 def expand_url(url: str) -> str:
-    """แปลงลิงก์ย่อ หรือลิงก์มือถือ (Facebook /share/) ให้กลายเป็นลิงก์เว็บปกติ"""
+    """แกะลิงก์ที่ถูกย่อมา (เช่น bit.ly, fb.watch, vt.tiktok.com) ให้เป็นลิงก์เต็ม"""
     
-    # 🚨 [ไม้ตายเฉพาะกิจ] ดักจับลิงก์เว็บจริง ที่ Facebook ซ่อนไว้ในหน้า Login
-    if "facebook.com/share/" in url.lower() or "fb.watch" in url.lower():
-        try:
-            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-            res = requests.get(url, headers=headers, timeout=10)
-            
-            # วิธีที่ 1: ดึงลิงก์เว็บแท้ จาก URL ของหน้า Login (พารามิเตอร์ next=)
-            if "next=" in res.url:
-                real_url = unquote(res.url.split("next=")[1].split("&")[0])
-                if "facebook.com" in real_url:
-                    return real_url
-                    
-            # วิธีที่ 2: ดึงจากโค้ด HTML เผื่อกรณีมันซ่อนอยู่ใน Source Code
-            match = re.search(r'next=(https%3A%2F%2F[^"\'&]+)', res.text)
-            if match:
-                real_url = unquote(match.group(1))
-                if "facebook.com" in real_url:
-                    return real_url
-        except Exception:
-            pass
-        return url # ถ้าแปลงไม่ได้ให้คืนค่าเดิมไปก่อน
-
-    # ================= ส่วนแกะลิงก์อื่นๆ ทั่วไป (คงไว้เหมือนเดิม) =================
     redirectors = [
         'shorturl.', 'bit.ly', 'tinyurl.', 't.co', 'cutt.ly', 'rebrand.ly', 
-        'lnkd.in', 'vt.tiktok.com', 'vm.tiktok.com', 'youtu.be', 'line.me', 'today.line.me'
+        'lnkd.in', 'fb.watch', '/share/', 'vt.tiktok.com', 'vm.tiktok.com', 
+        'youtu.be', 'line.me', 'today.line.me'
     ]
     
     if any(r in url.lower() for r in redirectors):
         try:
-            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"}
-            res = requests.get(url, headers=headers, allow_redirects=True, timeout=10, stream=True)
-            
-            if res.status_code in [403, 401, 503]: 
-                return url 
-                
+            # ใช้ User-Agent ของคอมพิวเตอร์ปกติ
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            }
+            res = requests.get(url, headers=headers, allow_redirects=True, timeout=10)
             final_url = res.url
             
+            # 🛠️ [ไม้ตายที่ 1 แก้บั๊ก Facebook มือถือ]: ดักจับ Javascript Redirect
+            # เฟซบุ๊กชอบเสิร์ฟหน้าเว็บเปล่าๆ ที่มีคำสั่ง window.location.replace("ลิงก์เว็บจริง") เราต้องแกะมันออกมา
+            if "facebook.com" in final_url or "fb.watch" in final_url:
+                js_match = re.search(r'location\.(?:replace|href)\s*=?\s*\(?["\'](.*?)["\']\)?', res.text, re.IGNORECASE)
+                if js_match:
+                    # แปลงสัญลักษณ์ \/ ที่เข้ารหัสไว้ให้กลับเป็น / ปกติ
+                    real_fb_url = js_match.group(1).replace('\\/', '/')
+                    if real_fb_url.startswith('/'):
+                        real_fb_url = f"https://www.facebook.com{real_fb_url}"
+                    return real_fb_url # ได้ลิงก์เว็บแท้แล้ว ส่งต่อให้ระบบปกติทำงานต่อได้เลย!
+            
+            # ป้องกันการติดหน้า Login/Captcha
             if "login" in final_url.lower() or "captcha" in final_url.lower() or "challenge" in final_url.lower(): 
                 return url 
                 
+            # ตรวจสอบ Meta Refresh
             meta_match = re.search(r'http-equiv=["\']?refresh["\']?[^>]*url=["\']?([^"\'>]+)["\']?', res.text, re.IGNORECASE)
             if meta_match: 
                 final_url = meta_match.group(1)
+                
+                # ถ้าระบบโยนเป็น relative path ให้ต่อเติมเป็น URL เต็ม
                 if final_url.startswith('/'):
                     from urllib.parse import urlparse
                     parsed = urlparse(res.url)
                     final_url = f"{parsed.scheme}://{parsed.netloc}{final_url}"
+                    
             return final_url
             
         except Exception: 
@@ -178,7 +171,30 @@ def extract_social_metadata(url: str) -> str:
                 
             return "Error: ไม่สามารถทะลวงระบบความปลอดภัยของ Instagram ได้ในขณะนี้"
 
-        # ================= 3. Social Media ทั่วไป (และตัวดัก Facebook) =================
+        # ================= 3. Facebook (ดึงผ่าน Embed API) =================
+        elif "facebook.com" in url or "fb.watch" in url:
+            try:
+                # 🛠️ [ไม้ตายที่ 2 แก้บั๊ก Facebook มือถือ]: ใช้ Facebook Plugin Embed 
+                # เป็นช่องทางที่ Facebook อนุญาตให้เว็บอื่นดึงไปแสดงผลได้โดยไม่ติด Login
+                safe_url = quote(url, safe=":/%?=&-_.#")
+                embed_url = f"https://www.facebook.com/plugins/post.php?href={safe_url}"
+                res_fb = requests.get(embed_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=12)
+                
+                if res_fb.status_code == 200:
+                    soup_fb = BeautifulSoup(res_fb.text, 'html.parser')
+                    # คัดกรองเอาเฉพาะแท็ก <p> หรือ <span> ที่มีข้อความยาวเกิน 20 ตัวอักษร
+                    text_parts = [p.get_text(strip=True) for p in soup_fb.find_all(['p', 'span']) if len(p.get_text(strip=True)) > 20]
+                    
+                    if text_parts:
+                        fb_text = "\n".join(set(text_parts))
+                        # เช็คเพื่อความชัวร์ว่าไม่ได้ไปดึงปุ่ม "Log In" มา
+                        if "เข้าสู่ระบบ" not in fb_text and "Log In" not in fb_text:
+                            return f"โพสต์จาก Facebook:\n{fb_text}"
+            except Exception:
+                pass
+            # ถ้าดึง Embed พลาด จะปล่อยให้มันไหลลงไปดึงแบบปกติด้านล่าง
+
+        # ================= 4. Social Media ทั่วไป (และตัวสำรอง Facebook) =================
         response = requests.get(url, headers=headers, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
         
@@ -197,7 +213,7 @@ def extract_social_metadata(url: str) -> str:
         
     except Exception as e:
         return f"Error: การสกัดข้อมูล Social Media ล้มเหลว - {str(e)}"
-
+    
 def force_extract_news_link(social_url: str) -> str:
     """ขุดหาลิงก์ข่าวจริงที่ซ่อนอยู่ในโพสต์ Facebook"""
     
