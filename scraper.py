@@ -5,8 +5,6 @@ from urllib.parse import unquote, quote
 
 def clean_mobile_url(url: str) -> str:
     """เคลียร์ Tracking และ Redirect ของลิงก์มือถือ"""
-    # 🛠️ [แก้บั๊กที่ 1]: แปลงลิงก์มือถือที่มีภาษาไทยดิบๆ ให้อยู่ในมาตรฐานเดียวกัน
-    url = unquote(url.strip())
     
     # เคลียร์ AMP ของ Google ที่แอปมือถือชอบใช้
     if "google.com/amp/s/" in url:
@@ -41,29 +39,12 @@ def clean_mobile_url(url: str) -> str:
     return url
 
 def expand_url(url: str) -> str:
-    """แกะลิงก์ที่ถูกย่อมา ให้เป็นลิงก์เต็ม"""
+    """แกะลิงก์ที่ถูกย่อมา (เช่น bit.ly, fb.watch, vt.tiktok.com) ให้เป็นลิงก์เต็ม"""
     
-    # 🚨 [เพิ่มโค้ดส่วนนี้] ดักจับเฉพาะลิงก์แชร์จากมือถือ Facebook โดยเฉพาะ
-    if "facebook.com/share/" in url.lower():
-        try:
-            # 1. จำลองเป็นมือถือ iPhone เพื่อให้ Facebook ยอมคายลิงก์
-            headers = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"}
-            
-            # 2. หัวใจสำคัญ: allow_redirects=False ห้ามตามลิงก์ไปเด็ดขาดเพื่อไม่ให้โดนเตะเข้าหน้า Login
-            res = requests.get(url, headers=headers, allow_redirects=False, timeout=10)
-            
-            # 3. ฉกเอาลิงก์ข่าวของจริงที่ซ่อนอยู่ใน Header 'Location'
-            if res.status_code in [301, 302, 303, 307, 308]:
-                loc = res.headers.get('Location')
-                if loc and "login" not in loc.lower():
-                    # แปลงลิงก์มือถือ (m.facebook) กลับเป็นเว็บปกติ (www.facebook) 
-                    # เพื่อส่งกลับไปให้โค้ดดึงข้อมูลเดิมของคุณทำงานต่อได้ตามปกติ!
-                    return loc.replace("://m.facebook.com", "://www.facebook.com")
-        except Exception:
-            pass
-        return url # ถ้าดักจับไม่ได้ ให้ส่งลิงก์เดิมกลับไป จะได้ไม่กระทบระบบหลัก
-
-    # ================= โค้ดเดิมของคุณทั้งหมด (คงไว้เหมือนเดิมเป๊ะๆ) =================
+    # 🚨🚨 [จุดแก้บั๊กเดียวที่เพิ่มเข้ามา]: สั่งห้ามระบบแตะต้องลิงก์ Facebook ปล่อยให้มันผ่านไปเลย!
+    if "facebook.com" in url.lower() or "fb.watch" in url.lower():
+        return url
+        
     redirectors = [
         'shorturl.', 'bit.ly', 'tinyurl.', 't.co', 'cutt.ly', 'rebrand.ly', 
         'lnkd.in', 'fb.watch', '/share/', 'vt.tiktok.com', 'vm.tiktok.com', 
@@ -72,22 +53,28 @@ def expand_url(url: str) -> str:
     
     if any(r in url.lower() for r in redirectors):
         try:
+            # ใช้ User-Agent ของคอมพิวเตอร์ปกติ
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
             }
             res = requests.get(url, headers=headers, allow_redirects=True, timeout=10)
             final_url = res.url
             
+            # ป้องกันการติดหน้า Login/Captcha
             if "login" in final_url.lower() or "captcha" in final_url.lower() or "challenge" in final_url.lower(): 
                 return url 
                 
+            # ตรวจสอบ Meta Refresh
             meta_match = re.search(r'http-equiv=["\']?refresh["\']?[^>]*url=["\']?([^"\'>]+)["\']?', res.text, re.IGNORECASE)
             if meta_match: 
                 final_url = meta_match.group(1)
+                
+                # ถ้าระบบโยนเป็น relative path ให้ต่อเติมเป็น URL เต็ม
                 if final_url.startswith('/'):
                     from urllib.parse import urlparse
                     parsed = urlparse(res.url)
                     final_url = f"{parsed.scheme}://{parsed.netloc}{final_url}"
+                    
             return final_url
             
         except Exception: 
@@ -175,30 +162,7 @@ def extract_social_metadata(url: str) -> str:
                 
             return "Error: ไม่สามารถทะลวงระบบความปลอดภัยของ Instagram ได้ในขณะนี้"
 
-        # ================= 3. Facebook (ดึงผ่าน Embed API) =================
-        elif "facebook.com" in url or "fb.watch" in url:
-            try:
-                # 🛠️ [ไม้ตายที่ 2 แก้บั๊ก Facebook มือถือ]: ใช้ Facebook Plugin Embed 
-                # เป็นช่องทางที่ Facebook อนุญาตให้เว็บอื่นดึงไปแสดงผลได้โดยไม่ติด Login
-                safe_url = quote(url, safe=":/%?=&-_.#")
-                embed_url = f"https://www.facebook.com/plugins/post.php?href={safe_url}"
-                res_fb = requests.get(embed_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=12)
-                
-                if res_fb.status_code == 200:
-                    soup_fb = BeautifulSoup(res_fb.text, 'html.parser')
-                    # คัดกรองเอาเฉพาะแท็ก <p> หรือ <span> ที่มีข้อความยาวเกิน 20 ตัวอักษร
-                    text_parts = [p.get_text(strip=True) for p in soup_fb.find_all(['p', 'span']) if len(p.get_text(strip=True)) > 20]
-                    
-                    if text_parts:
-                        fb_text = "\n".join(set(text_parts))
-                        # เช็คเพื่อความชัวร์ว่าไม่ได้ไปดึงปุ่ม "Log In" มา
-                        if "เข้าสู่ระบบ" not in fb_text and "Log In" not in fb_text:
-                            return f"โพสต์จาก Facebook:\n{fb_text}"
-            except Exception:
-                pass
-            # ถ้าดึง Embed พลาด จะปล่อยให้มันไหลลงไปดึงแบบปกติด้านล่าง
-
-        # ================= 4. Social Media ทั่วไป (และตัวสำรอง Facebook) =================
+        # ================= 3. Social Media ทั่วไป (และตัวดัก Facebook) =================
         response = requests.get(url, headers=headers, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
         
@@ -217,7 +181,7 @@ def extract_social_metadata(url: str) -> str:
         
     except Exception as e:
         return f"Error: การสกัดข้อมูล Social Media ล้มเหลว - {str(e)}"
-    
+
 def force_extract_news_link(social_url: str) -> str:
     """ขุดหาลิงก์ข่าวจริงที่ซ่อนอยู่ในโพสต์ Facebook"""
     
@@ -260,8 +224,8 @@ def fetch_with_fallback(url: str) -> str:
     
     def is_valid_text(text):
         clean = text.strip()
-        # 🛠️ [แก้บั๊กที่ 3]: ลดความยาวจาก 50 เหลือ 30 เพื่อให้ผ่านข่าวสั้นบนมือถือได้
-        if len(clean) < 30: 
+        # ถ้าข้อความสั้นกว่า 50 ตัวอักษร ไม่มีประโยชน์ต่อ AI 
+        if len(clean) < 50: 
             return False 
         # ถ้าข้อความสั้นกว่า 800 ตัวอักษร และมีคำว่า Cloudflare อยู่ แสดงว่าโดนบล็อก
         if len(clean) < 800 and re.search(anti_bot_patterns, clean, re.IGNORECASE): 
@@ -292,9 +256,7 @@ def fetch_with_fallback(url: str) -> str:
 
     # ================= [Layer 2]: Jina AI =================
     try:
-        # 🛠️ [แก้บั๊กที่ 4 - สำคัญที่สุด]: เข้ารหัส URL ภาษาไทยก่อนส่งให้ Jina
-        safe_url = quote(url, safe=":/%?=&-_.#")
-        jina_url = f"https://r.jina.ai/{safe_url}"
+        jina_url = f"https://r.jina.ai/{url}"
         response = requests.get(jina_url, headers={"Accept": "text/plain", "X-Retain-Images": "none"}, timeout=15)
         
         if response.status_code == 200 and is_valid_text(response.text):
@@ -364,8 +326,7 @@ def extract_text_from_url(url: str) -> dict:
                 if fallback_content: 
                     content = fallback_content
                 else: 
-                    # 🛠️ [แก้บั๊กที่ 5]: ลบคำว่า "Error:" ออก เพื่อไม่ให้ UI ตีความว่าโดนบล็อคจากโซเชียลแบบผิดๆ
-                    return {"error": "ไม่สามารถดึงข้อมูลเว็บข่าวได้"}
+                    return {"error": content}
                 
             hidden_news_url = force_extract_news_link(url)
             if hidden_news_url:
@@ -391,7 +352,7 @@ def extract_text_from_url(url: str) -> dict:
                     return {"error": "GAMBLING_DETECTED"}
                 return {"content": actual_news_content, "actual_url": url}
             else:
-                return {"error": "ไม่สามารถดึงข้อมูลเว็บข่าวได้ หรือเซิร์ฟเวอร์ปฏิเสธการเข้าถึง"}
+                return {"error": "Error: ไม่สามารถดึงข้อมูลเว็บข่าวได้ หรือเซิร์ฟเวอร์ปฏิเสธการเข้าถึง"}
                 
     except Exception as e:
-        return {"error": "ระบบสกัดข้อมูลขัดข้อง"}
+        return {"error": f"Error: ระบบสกัดข้อมูลขัดข้อง - {str(e)}"}
