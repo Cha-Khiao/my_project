@@ -39,8 +39,7 @@ def clean_mobile_url(url: str) -> str:
     return url
 
 def expand_url(url: str) -> str:
-    """แกะลิงก์ที่ถูกย่อมา (เช่น bit.ly, fb.watch, vt.tiktok.com) ให้เป็นลิงก์เต็ม"""
-    
+    """แกะลิงก์ที่ถูกย่อมา ให้เป็นลิงก์เต็มโดยใช้กุญแจผี (Bot User-Agent)"""
     redirectors = [
         'shorturl.', 'bit.ly', 'tinyurl.', 't.co', 'cutt.ly', 'rebrand.ly', 
         'lnkd.in', 'fb.watch', '/share/', 'vt.tiktok.com', 'vm.tiktok.com', 
@@ -49,35 +48,29 @@ def expand_url(url: str) -> str:
     
     if any(r in url.lower() for r in redirectors):
         try:
-            # ใช้ User-Agent ของคอมพิวเตอร์ปกติ
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-            }
-            # 🛠️ [แก้บั๊กมือถือ]: ใช้ stream=True เพื่อไม่โหลดหน้าเว็บเต็ม ป้องกันการปลุก Anti-bot
-            res = requests.get(url, headers=headers, allow_redirects=True, timeout=10, stream=True)
+            # 🔑 กุญแจผี: ปลอมตัวเป็นระบบ Preview ของ WhatsApp/Facebook เพื่อไม่ให้โดนเด้งไปหน้า Login
+            headers = {"User-Agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"}
             
-            # 🛠️ ถ้าระบบเจอ Cloudflare ให้หยุดขยายลิงก์ ปล่อยให้ระบบ Bypass จัดการต่อ
-            if res.status_code in [403, 401, 503]: 
-                return url 
-                
-            final_url = res.url
+            # 🛑 สำคัญมาก: ปิดการตามลิงก์อัตโนมัติ (allow_redirects=False) เพื่อดักจับลิงก์จริงก่อนมันจะเตะเราไปหน้า Login
+            res = requests.get(url, headers=headers, allow_redirects=False, timeout=10)
             
-            # ป้องกันการติดหน้า Login/Captcha
-            if "login" in final_url.lower() or "captcha" in final_url.lower() or "challenge" in final_url.lower(): 
-                return url 
-                
-            # ตรวจสอบ Meta Refresh
-            meta_match = re.search(r'http-equiv=["\']?refresh["\']?[^>]*url=["\']?([^"\'>]+)["\']?', res.text, re.IGNORECASE)
-            if meta_match: 
-                final_url = meta_match.group(1)
-                
-                # ถ้าระบบโยนเป็น relative path ให้ต่อเติมเป็น URL เต็ม
-                if final_url.startswith('/'):
-                    from urllib.parse import urlparse
-                    parsed = urlparse(res.url)
-                    final_url = f"{parsed.scheme}://{parsed.netloc}{final_url}"
+            # ถ้าแอปพยายาม Redirect (301, 302) ให้เราฉกเอาลิงก์ปลายทางมาใช้เลย
+            if res.status_code in [301, 302, 303, 307, 308]:
+                loc = res.headers.get('Location')
+                if loc:
+                    if loc.startswith('/'):
+                        from urllib.parse import urlparse
+                        parsed = urlparse(res.url)
+                        loc = f"{parsed.scheme}://{parsed.netloc}{loc}"
+                    return loc
                     
-            return final_url
+            # ถ้าไม่ยอม Redirect ผ่าน Header ลองดึงลิงก์จริงจาก Meta tag 
+            soup = BeautifulSoup(res.text, 'html.parser')
+            og_url = soup.find("meta", property="og:url")
+            if og_url and og_url.get("content") and "login" not in og_url["content"].lower():
+                return og_url["content"]
+                
+            return res.url
             
         except Exception: 
             pass
@@ -89,10 +82,11 @@ def resolve_short_url(url: str) -> str:
     return expand_url(url) 
 
 def extract_social_metadata(url: str) -> str:
-    """สกัดเฉพาะข้อความ/แคปชั่นจาก Social Media"""
+    """สกัดเฉพาะข้อความ/แคปชั่นจาก Social Media โดยไม่ติด Login Wall"""
     
+    # 🔑 ใช้กุญแจผี ดึงข้อมูล โซเชียลค่ายต่างๆ จะยอมคาย Metadata ให้เสมอ
     headers = {
-        "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
+        "User-Agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"
     }
     
     try:
@@ -164,10 +158,11 @@ def extract_social_metadata(url: str) -> str:
                 
             return "Error: ไม่สามารถทะลวงระบบความปลอดภัยของ Instagram ได้ในขณะนี้"
 
-        # ================= 3. Social Media ทั่วไป (และตัวดัก Facebook) =================
+        # ================= 3. Social Media ทั่วไป (และดักจับ Facebook) =================
         response = requests.get(url, headers=headers, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
         
+        # ค้นหาข้อความข่าวจาก Open Graph Tags ที่ซ่อนอยู่
         og_title = soup.find("meta", property="og:title") or soup.find("meta", attrs={"name": "og:title"})
         og_desc = soup.find("meta", property="og:description") or soup.find("meta", attrs={"name": "og:description"})
         
