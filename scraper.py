@@ -4,7 +4,7 @@ from bs4 import BeautifulSoup
 from urllib.parse import unquote
 
 def clean_mobile_url(url: str) -> str:
-    # 🛠️ 1. แก้บั๊กลิงก์ซ้อน: จัดการ Redirect URL
+    # 1. จัดการ Redirect URL ของ Facebook
     if "l.facebook.com/l.php?u=" in url:
         try:
             url = unquote(url.split("u=")[1].split("&")[0])
@@ -14,11 +14,12 @@ def clean_mobile_url(url: str) -> str:
     url = url.replace("://m.facebook.com", "://www.facebook.com")
     url = url.replace("://mobile.twitter.com", "://twitter.com")
     
-    # 🛠️ 2. ลบ Tracking Parameters ที่แถมมาจากมือถือ (เพิ่ม s= และ t= ของ X)
+    # 2. ตัดพารามิเตอร์ขยะทั้งหมดที่แอปมือถือชอบแถมมา
     if "?" in url:
         base_url, query_str = url.split("?", 1)
         params = query_str.split("&")
-        clean_params = [p for p in params if not p.startswith(('mibextid=', 'igsh=', 'si=', 'fbclid=', 'is_from_webapp=', 'h=', 's=', 't='))]
+        # 🛠️ เพิ่ม 'utm_' เข้าไป (การแชร์ผ่านมือถือมักจะแถม utm_source มาด้วย ซึ่งไปกระตุ้น Cloudflare ของเว็บข่าว)
+        clean_params = [p for p in params if not p.startswith(('mibextid=', 'igsh=', 'si=', 'fbclid=', 'is_from_webapp=', 'h=', 's=', 't=', 'utm_'))]
         
         if clean_params:
             url = f"{base_url}?{'&'.join(clean_params)}"
@@ -27,35 +28,40 @@ def clean_mobile_url(url: str) -> str:
             
     return url
 
-# 🌟 ฟังก์ชันใหม่: จำลองการเข้าผ่านมือถือเพื่อแกะลิงก์สะพาน (/share/) ให้กลายเป็นลิงก์จริง
 def expand_url(url: str) -> str:
-    redirectors = ['shorturl.', 'bit.ly', 'tinyurl.', 't.co', 'cutt.ly', 'rebrand.ly', 'lnkd.in', 'fb.watch', '/share/p/', '/share/v/', '/share/r/', 'vt.tiktok.com', 'vm.tiktok.com', 'youtu.be', 'line.me']
+    redirectors = ['shorturl.', 'bit.ly', 'tinyurl.', 't.co', 'cutt.ly', 'rebrand.ly', 'lnkd.in', 'fb.watch', '/share/', 'vt.tiktok.com', 'vm.tiktok.com', 'youtu.be', 'line.me']
     
     if any(r in url.lower() for r in redirectors):
         try:
-            # ใช้ User-Agent ของ iPhone เพื่อหลอกให้ระบบคายลิงก์ Mobile ที่แท้จริงออกมา
-            headers = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"}
-            res = requests.get(url, headers=headers, allow_redirects=True, timeout=12)
+            # ใช้ User-Agent มาตรฐาน เพื่อไม่ให้ Cloudflare สงสัย
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"}
+            res = requests.get(url, headers=headers, allow_redirects=True, timeout=10)
             
             final_url = res.url
             
-            # ตรวจสอบการซ่อนลิงก์ผ่าน HTML Meta Refresh
+            # 🛠️ ป้องกันการทะลวงลิงก์แล้วไปติดแหง็กที่หน้า Login/Captcha ของโซเชียล
+            if "login" in final_url.lower() or "captcha" in final_url.lower() or "challenge" in final_url.lower():
+                return url 
+                
             meta_match = re.search(r'http-equiv=["\']?refresh["\']?[^>]*url=["\']?([^"\'>]+)["\']?', res.text, re.IGNORECASE)
             if meta_match: 
                 final_url = meta_match.group(1)
-                
-            # ตรวจสอบการซ่อนลิงก์ผ่าน JavaScript
-            js_match = re.search(r'window\.location\.(?:href|replace)\s*=\s*["\'](.*?)["\']', res.text, re.IGNORECASE)
-            if js_match: 
-                final_url = js_match.group(1)
-                
+                if final_url.startswith('/'):
+                    from urllib.parse import urlparse
+                    parsed = urlparse(res.url)
+                    final_url = f"{parsed.scheme}://{parsed.netloc}{final_url}"
             return final_url
         except Exception:
             pass
     return url
 
+def resolve_short_url(url: str) -> str:
+    return expand_url(url) 
+
 def extract_social_metadata(url: str) -> str:
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)"}
+    """ดึงแคปชั่นพรีวิวจาก Social Media แบบทะลวงครบทุกด่าน"""
+    # 🛠️ ใช้ Googlebot เพื่อให้ Social Media บางค่ายยอมปล่อยผ่าน
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"}
     try:
         if "x.com/" in url or "twitter.com/" in url:
             match = re.search(r'(?:x|twitter)\.com(/.*)', url)
@@ -111,6 +117,7 @@ def extract_social_metadata(url: str) -> str:
                                 return f"{title}\n{desc}".strip()
             except Exception:
                 pass
+                
             return "Error: ไม่สามารถทะลวงระบบความปลอดภัยของ Instagram ได้ในขณะนี้"
 
         response = requests.get(url, headers=headers, timeout=15)
@@ -151,34 +158,43 @@ def force_extract_news_link(social_url: str) -> str:
         return ""
 
 def fetch_with_fallback(url: str) -> str:
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36", 
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": "th-TH,th;q=0.9,en-US;q=0.8,en;q=0.7",
-        "Referer": "https://www.google.com/"
-    }
+    # 🛠️ 3. กลยุทธ์ทะลวง Anti-bot: ใช้ Googlebot เป็นหัวหอกในการอ่านข่าว (เว็บข่าว 99% ปล่อยผ่าน Googlebot)
+    headers_list = [
+        {"User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)", "Accept": "*/*"},
+        {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36", 
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "th-TH,th;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Referer": "https://www.google.com/"
+        }
+    ]
     
-    try:
-        res = requests.get(url, headers=headers, timeout=15, allow_redirects=True)
-        if res.status_code == 200:
-            if res.encoding is None or res.encoding.lower() == 'iso-8859-1':
-                res.encoding = res.apparent_encoding or 'utf-8'
-            soup = BeautifulSoup(res.text, 'html.parser')
-            for element in soup(["script", "style", "nav", "header", "footer", "aside", "noscript"]): 
-                element.extract()
-            clean_text = re.sub(r'\s+', ' ', soup.get_text(separator=' ', strip=True)).strip()
-            
-            if len(clean_text) > 100 and not re.search(r'(500 internal server error|403 forbidden|access denied)', clean_text, re.IGNORECASE):
-                return clean_text
-    except Exception:
-        pass
+    # 🛠️ เพิ่มคีย์เวิร์ดดักจับหน้าต่าง Anti-Bot อย่างแม่นยำ
+    anti_bot_patterns = r'(cloudflare|500 internal server error|403 forbidden|access denied|captcha|not acceptable|checking your browser|security check)'
+    
+    for headers in headers_list:
+        try:
+            res = requests.get(url, headers=headers, timeout=12, allow_redirects=True)
+            if res.status_code == 200:
+                if res.encoding is None or res.encoding.lower() == 'iso-8859-1':
+                    res.encoding = res.apparent_encoding or 'utf-8'
+                soup = BeautifulSoup(res.text, 'html.parser')
+                for element in soup(["script", "style", "nav", "header", "footer", "aside", "noscript"]): 
+                    element.extract()
+                clean_text = re.sub(r'\s+', ' ', soup.get_text(separator=' ', strip=True)).strip()
+                
+                # 🛠️ 4. ปรับเกณฑ์ความยาวข้อความ: โพสต์ข่าวสั้น/พาดหัวข่าวมักโดนปัดตกหาว่าเป็น Error เราปรับจาก > 100 เป็น > 30 ตัวอักษร
+                if len(clean_text) > 30 and not re.search(anti_bot_patterns, clean_text, re.IGNORECASE):
+                    return clean_text
+        except Exception:
+            continue
 
     try:
         jina_url = f"https://r.jina.ai/{url}"
         response = requests.get(jina_url, headers={"Accept": "text/plain", "X-Retain-Images": "none"}, timeout=20)
         if response.status_code == 200:
             content = response.text
-            if len(content.strip()) > 100 and not re.search(r'(500 internal server error|403 forbidden|access denied)', content, re.IGNORECASE): 
+            if len(content.strip()) > 30 and not re.search(anti_bot_patterns, content, re.IGNORECASE): 
                 return content
     except Exception:
         pass
@@ -188,14 +204,9 @@ def fetch_with_fallback(url: str) -> str:
 def extract_text_from_url(url: str) -> dict:
     """ศูนย์กลางสกัดข้อมูล"""
     try:
-        # 🛠️ 1. ล้างขยะรอบแรก
         url = clean_mobile_url(url)
-        
-        # 🛠️ 2. คลายปมลิงก์ (เปลี่ยนลิงก์แชร์จากแอป เป็นลิงก์เว็บปกติ)
         url = expand_url(url)
-        
-        # 🛠️ 3. ล้างขยะรอบสอง (เพราะหลังจากคลายลิงก์ อาจจะยังมี m.facebook ติดมา)
-        url = clean_mobile_url(url)
+        url = clean_mobile_url(url) # ล้างขยะรอบสองเผื่อลิงก์คลายตัวแล้วมีติดมา
         
         VIDEO_PATTERNS = [
             r'youtube\.com/watch', r'youtu\.be', r'youtube\.com/shorts',
