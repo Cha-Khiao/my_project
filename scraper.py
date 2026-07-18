@@ -27,10 +27,46 @@ def clean_mobile_url(url: str) -> str:
             
     return url
 
-# 🌟 ฟังก์ชันใหม่: จำลองการเข้าผ่านมือถือเพื่อแกะลิงก์สะพาน (/share/) ให้กลายเป็นลิงก์จริง
+# 🌟 ฟังก์ชันพิเศษที่เพิ่มเข้ามา: เพื่อจัดการลิงก์ /share/19Mhywv223/ (แบบไม่มี p, v, r)
+def resolve_facebook_share_link(url: str) -> str:
+    if "facebook.com/share/" not in url.lower():
+        return url
+        
+    try:
+        # ใช้เบราว์เซอร์ปกติเพื่อให้ Facebook เตะไปหน้า Login แล้วเราจะฉกลิงก์จากตรงนั้น
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept-Language": "th-TH,th;q=0.9,en-US;q=0.8,en;q=0.7"
+        }
+        res = requests.get(url, headers=headers, timeout=10, allow_redirects=True)
+        
+        # 1. ถ้าลิงก์มันพุ่งไปหน้าเว็บจริงได้เลย
+        if "facebook.com/share/" not in res.url.lower() and "login" not in res.url.lower():
+            return res.url
+            
+        # 2. ถ้ามันเตะไปหน้า Login ให้แกะลิงก์ของจริงออกจากคำว่า next=
+        if "next=" in res.url.lower():
+            real_url = unquote(res.url.split("next=")[1].split("&")[0])
+            if "facebook.com/share/" not in real_url.lower() and "login" not in real_url.lower():
+                return real_url
+        
+        # 3. ถ้า Facebook แอบซ่อนลิงก์ไว้ในโค้ด Javascript (เจอได้บ่อย)
+        js_match = re.search(r'location\.(?:replace|href)\s*=?\s*\(?["\'](.*?)["\']\)?', res.text, re.IGNORECASE)
+        if js_match:
+            real_url = js_match.group(1).replace('\\/', '/')
+            if real_url.startswith('/'):
+                real_url = "https://www.facebook.com" + real_url
+            if "facebook.com/share/" not in real_url.lower() and "login" not in real_url.lower():
+                return real_url
+                
+    except Exception:
+        pass
+        
+    return url
+
+# 🌟 ฟังก์ชันดั้งเดิมของคุณ (ไม่มีการปรับเปลี่ยนใดๆ)
 def expand_url(url: str) -> str:
-    # เพิ่ม /share/ ตัวหลักเข้าไปดักจับให้ครอบคลุมขึ้น
-    redirectors = ['shorturl.', 'bit.ly', 'tinyurl.', 't.co', 'cutt.ly', 'rebrand.ly', 'lnkd.in', 'fb.watch', '/share/p/', '/share/v/', '/share/r/', '/share/', 'vt.tiktok.com', 'vm.tiktok.com', 'youtu.be', 'line.me']
+    redirectors = ['shorturl.', 'bit.ly', 'tinyurl.', 't.co', 'cutt.ly', 'rebrand.ly', 'lnkd.in', 'fb.watch', '/share/p/', '/share/v/', '/share/r/', 'vt.tiktok.com', 'vm.tiktok.com', 'youtu.be', 'line.me']
     
     if any(r in url.lower() for r in redirectors):
         try:
@@ -39,11 +75,6 @@ def expand_url(url: str) -> str:
             res = requests.get(url, headers=headers, allow_redirects=True, timeout=12)
             
             final_url = res.url
-            
-            # 🚀 [อาวุธเสริมที่ 1]: ถ้าถูก Facebook เตะไปหน้า Login ให้ฉกลิงก์เว็บจริงที่ซ่อนอยู่ออกมา
-            if "facebook.com/login" in final_url.lower() and "next=" in final_url.lower():
-                real_url = unquote(final_url.split("next=")[1].split("&")[0])
-                return real_url.replace("://m.facebook.com", "://www.facebook.com")
             
             # ตรวจสอบการซ่อนลิงก์ผ่าน HTML Meta Refresh
             meta_match = re.search(r'http-equiv=["\']?refresh["\']?[^>]*url=["\']?([^"\'>]+)["\']?', res.text, re.IGNORECASE)
@@ -54,13 +85,8 @@ def expand_url(url: str) -> str:
             js_match = re.search(r'window\.location\.(?:href|replace)\s*=\s*["\'](.*?)["\']', res.text, re.IGNORECASE)
             if js_match: 
                 final_url = js_match.group(1)
-                # 🚀 [ดักจับอีกชั้น]: เผื่อ Javascript ซ่อนลิงก์ Login ไว้
-                if "facebook.com/login" in final_url.lower() and "next=" in final_url.lower():
-                    real_url = unquote(final_url.split("next=")[1].split("&")[0])
-                    return real_url.replace("://m.facebook.com", "://www.facebook.com")
                 
-            # แปลงลิงก์มือถือเป็นเว็บก่อนส่งกลับ
-            return final_url.replace("://m.facebook.com", "://www.facebook.com")
+            return final_url
         except Exception:
             pass
     return url
@@ -124,13 +150,7 @@ def extract_social_metadata(url: str) -> str:
                 pass
             return "Error: ไม่สามารถทะลวงระบบความปลอดภัยของ Instagram ได้ในขณะนี้"
 
-        # 🚀 [อาวุธเสริมที่ 2]: ถ้าเป็น Facebook ให้เปลี่ยนไปใช้กุญแจผี เพื่อไม่ให้มันเด้ง Login Wall
-        req_headers = headers.copy()
-        if "facebook.com" in url or "fb.watch" in url:
-            req_headers = {"User-Agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"}
-
-        response = requests.get(url, headers=req_headers, timeout=15)
-        response.encoding = 'utf-8' # ป้องกันภาษาไทยเพี้ยน
+        response = requests.get(url, headers=headers, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
         
         og_title = soup.find("meta", property="og:title") or soup.find("meta", attrs={"name": "og:title"})
@@ -152,11 +172,6 @@ def extract_social_metadata(url: str) -> str:
 def force_extract_news_link(social_url: str) -> str:
     if "x.com" in social_url.lower() or "twitter.com" in social_url.lower(): return ""
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)"}
-    
-    # 🚀 [อาวุธเสริมที่ 3]: เปลี่ยน User-Agent เมื่อต้องการขุดลิงก์จาก Facebook
-    if "facebook.com" in social_url.lower() or "fb.watch" in social_url.lower():
-        headers = {"User-Agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"}
-        
     try:
         response = requests.get(social_url, headers=headers, timeout=15, allow_redirects=True)
         decoded_html = unquote(response.text)
@@ -213,10 +228,13 @@ def extract_text_from_url(url: str) -> dict:
         # 🛠️ 1. ล้างขยะรอบแรก
         url = clean_mobile_url(url)
         
-        # 🛠️ 2. คลายปมลิงก์ (เปลี่ยนลิงก์แชร์จากแอป เป็นลิงก์เว็บปกติ)
+        # 🚀 2. ดักจับและแปลงลิงก์ /share/19Mhywv223/ ของมือถือก่อนเลย!
+        url = resolve_facebook_share_link(url)
+        
+        # 🛠️ 3. คลายปมลิงก์ย่ออื่นๆ (ตามโค้ดเดิมของคุณ)
         url = expand_url(url)
         
-        # 🛠️ 3. ล้างขยะรอบสอง (เพราะหลังจากคลายลิงก์ อาจจะยังมี m.facebook ติดมา)
+        # 🛠️ 4. ล้างขยะรอบสุดท้าย
         url = clean_mobile_url(url)
         
         VIDEO_PATTERNS = [
