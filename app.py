@@ -253,8 +253,8 @@ with tab1:
         if url_input:
             input_method_used = "URL Link"
             
-            # 🛠️ สกัดเอาเฉพาะลิงก์ภาษาอังกฤษ (ทิ้งข้อความภาษาไทยที่มือถือแถมมา)
-            url_match = re.search(r'(https?://[a-zA-Z0-9-._~:/?#\[\]@!$&\'*+,;=%]+)', url_input)
+            # 🛠️ [จุดที่แก้ไข] ปรับ Regex ให้รองรับภาษาไทยใน URL จากมือถือได้แล้ว
+            url_match = re.search(r'(https?://[^\s\n\r<>]+)', url_input)
             clean_url = url_match.group(1).rstrip('.,;!?)\'"]') if url_match else url_input.strip()
             
             if any(re.search(pattern, clean_url.lower()) for pattern in VIDEO_PATTERNS):

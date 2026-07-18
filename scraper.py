@@ -53,7 +53,13 @@ def expand_url(url: str) -> str:
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
             }
-            res = requests.get(url, headers=headers, allow_redirects=True, timeout=10)
+            # 🛠️ [แก้บั๊กมือถือ]: ใช้ stream=True เพื่อไม่โหลดหน้าเว็บเต็ม ป้องกันการปลุก Anti-bot
+            res = requests.get(url, headers=headers, allow_redirects=True, timeout=10, stream=True)
+            
+            # 🛠️ ถ้าระบบเจอ Cloudflare ให้หยุดขยายลิงก์ ปล่อยให้ระบบ Bypass จัดการต่อ
+            if res.status_code in [403, 401, 503]: 
+                return url 
+                
             final_url = res.url
             
             # ป้องกันการติดหน้า Login/Captcha
@@ -216,14 +222,14 @@ def force_extract_news_link(social_url: str) -> str:
 def fetch_with_fallback(url: str) -> str:
     """ระบบ 3-Layer Bypass สำหรับทะลวงกำแพงเว็บข่าว"""
     
-    anti_bot_patterns = r'(cloudflare|500 internal server error|403 forbidden|access denied|captcha|not acceptable|checking your browser|security check|just a moment)'
+    # 🛠️ [แก้บั๊กมือถือ]: ปรับรูปแบบคำค้นหาให้เจาะจงเฉพาะประโยค Anti-bot เท่านั้น ลดการเหมารวม
+    anti_bot_patterns = r'(enable javascript and cookies to continue|checking your browser before accessing|cloudflare-nginx|please wait\.\.\. we are checking your browser|checking if the site connection is secure|attention required!\|cloudflare)'
     
     def is_valid_text(text):
         clean = text.strip()
-        # ถ้าข้อความสั้นกว่า 50 ตัวอักษร ไม่มีประโยชน์ต่อ AI 
-        if len(clean) < 50: 
+        # 🛠️ ลดเกณฑ์ความยาวเหลือ 30 ตัวอักษร เพื่อให้รองรับข่าวสั้นๆ หรือพาดหัวข่าวจากมือถือได้
+        if len(clean) < 30: 
             return False 
-        # ถ้าข้อความสั้นกว่า 800 ตัวอักษร และมีคำว่า Cloudflare อยู่ แสดงว่าโดนบล็อก
         if len(clean) < 800 and re.search(anti_bot_patterns, clean, re.IGNORECASE): 
             return False 
         return True
@@ -252,7 +258,10 @@ def fetch_with_fallback(url: str) -> str:
 
     # ================= [Layer 2]: Jina AI =================
     try:
-        jina_url = f"https://r.jina.ai/{url}"
+        # 🛠️ [แก้บั๊กมือถือ]: เข้ารหัสภาษาไทยใน URL ก่อนส่ง (URL Encoding) สำคัญที่สุดเพื่อไม่ให้ API พัง
+        safe_url = quote(url, safe=":/%?=&-_.#")
+        jina_url = f"https://r.jina.ai/{safe_url}"
+        
         response = requests.get(jina_url, headers={"Accept": "text/plain", "X-Retain-Images": "none"}, timeout=15)
         
         if response.status_code == 200 and is_valid_text(response.text):
