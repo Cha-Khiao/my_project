@@ -4,7 +4,9 @@ from bs4 import BeautifulSoup
 from urllib.parse import unquote, quote
 
 def clean_mobile_url(url: str) -> str:
-    """เคลียร์ Tracking และ Redirect ของลิงก์มือถือ"""
+    """เคลียร์ Tracking และปรับมาตรฐานการเข้ารหัสของลิงก์จากมือถือ"""
+    url = unquote(url.strip()) # 🛠️ แปลงลิงก์มือถือที่มีภาษาไทยดิบๆ ให้อยู่ในมาตรฐานเดียวกัน
+    
     if "google.com/amp/s/" in url:
         url = url.replace("google.com/amp/s/", "").replace("https://www.", "https://")
         
@@ -31,34 +33,21 @@ def clean_mobile_url(url: str) -> str:
             
     return url
 
-# 🌟 [ตัวช่วยพิเศษ]: แปลงลิงก์มือถือให้เป็นลิงก์เว็บคอมพิวเตอร์
-def resolve_facebook_share(url: str) -> str:
-    """ดักจับลิงก์ /share/ จากมือถือ แล้วแปลงเป็นลิงก์โพสต์ปกติของเว็บ"""
-    if "facebook.com/share/" in url.lower():
+def expand_url(url: str) -> str:
+    """แกะลิงก์ที่ถูกย่อมา ให้เป็นลิงก์เต็ม"""
+    
+    # 🌟 [ไม้ตายทะลวง Facebook มือถือ]: ฉกลิงก์เว็บจริงจากพารามิเตอร์ next ของหน้า Login
+    if "facebook.com/share/" in url.lower() or "fb.watch" in url.lower():
         try:
             headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-            # ห้ามตาม Redirect เพื่อฉกเอาลิงก์จริงจาก Header มาใช้งาน
-            res = requests.get(url, headers=headers, allow_redirects=False, timeout=10)
-            
-            if res.status_code in [301, 302, 303, 307, 308]:
-                loc = res.headers.get("Location")
-                if loc and "login" not in loc.lower():
-                    return loc.split("?")[0] # คืนค่าเป็นลิงก์เว็บคอมพิวเตอร์ที่ระบบอ่านได้ปกติ!
-            
-            # กรณี Facebook ซ่อนลิงก์ใน Javascript
-            js_match = re.search(r'location\.(?:replace|href)\s*=?\s*\(?["\'](.*?)["\']\)?', res.text, re.IGNORECASE)
-            if js_match:
-                loc = js_match.group(1).replace('\\/', '/')
-                if "login" not in loc.lower():
-                    if loc.startswith('/'):
-                        loc = f"https://www.facebook.com{loc}"
-                    return loc.split("?")[0]
+            res = requests.get(url, headers=headers, allow_redirects=True, timeout=10)
+            if "next=" in res.url:
+                real_url = unquote(res.url.split("next=")[1].split("&")[0])
+                if "facebook.com" in real_url:
+                    return real_url
         except Exception:
             pass
-    return url
 
-def expand_url(url: str) -> str:
-    """แกะลิงก์ที่ถูกย่อมา (เช่น bit.ly, fb.watch, vt.tiktok.com) ให้เป็นลิงก์เต็ม"""
     redirectors = [
         'shorturl.', 'bit.ly', 'tinyurl.', 't.co', 'cutt.ly', 'rebrand.ly', 
         'lnkd.in', 'fb.watch', '/share/', 'vt.tiktok.com', 'vm.tiktok.com', 
@@ -196,14 +185,16 @@ def force_extract_news_link(social_url: str) -> str:
         return ""
 
 def fetch_with_fallback(url: str) -> str:
+    """ระบบ 3-Layer Bypass สำหรับทะลวงกำแพงเว็บข่าว"""
     anti_bot_patterns = r'(cloudflare|500 internal server error|403 forbidden|access denied|captcha|not acceptable|checking your browser|security check|just a moment)'
     
     def is_valid_text(text):
         clean = text.strip()
-        if len(clean) < 50: return False 
+        if len(clean) < 30: return False # อนุโลมข่าวสั้นๆ บนมือถือ
         if len(clean) < 800 and re.search(anti_bot_patterns, clean, re.IGNORECASE): return False 
         return True
 
+    # ================= [Layer 1]: ดึงปกติ (Googlebot) =================
     headers = {"User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)", "Accept": "*/*"}
     try:
         res = requests.get(url, headers=headers, timeout=12, allow_redirects=True)
@@ -215,13 +206,31 @@ def fetch_with_fallback(url: str) -> str:
             if is_valid_text(clean_text): return clean_text
     except Exception: pass
 
+    # ================= [Layer 1.5]: Facebook Embed Plugin =================
+    if "facebook.com" in url:
+        try:
+            safe_url = quote(url, safe=":/%?=&-_.#")
+            embed_url = f"https://www.facebook.com/plugins/post.php?href={safe_url}"
+            res_fb = requests.get(embed_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+            if res_fb.status_code == 200:
+                soup_fb = BeautifulSoup(res_fb.text, 'html.parser')
+                text_parts = [p.get_text(strip=True) for p in soup_fb.find_all(['p', 'span']) if len(p.get_text(strip=True)) > 20]
+                if text_parts:
+                    fb_text = "\n".join(set(text_parts))
+                    if "เข้าสู่ระบบ" not in fb_text and "Log In" not in fb_text:
+                        return f"โพสต์จาก Facebook:\n{fb_text}"
+        except Exception: pass
+
+    # ================= [Layer 2]: Jina AI =================
     try:
-        jina_url = f"https://r.jina.ai/{url}"
+        safe_url = quote(url, safe=":/%?=&-_.#") # 🛠️ เข้ารหัสภาษาไทยป้องกัน Jina แครช
+        jina_url = f"https://r.jina.ai/{safe_url}"
         response = requests.get(jina_url, headers={"Accept": "text/plain", "X-Retain-Images": "none"}, timeout=15)
         if response.status_code == 200 and is_valid_text(response.text):
             return response.text
     except Exception: pass
     
+    # ================= [Layer 3]: Proxy (AllOrigins) =================
     try:
         proxy_url = f"https://api.allorigins.win/raw?url={quote(url)}"
         res = requests.get(proxy_url, timeout=15)
@@ -237,26 +246,25 @@ def fetch_with_fallback(url: str) -> str:
 def extract_text_from_url(url: str) -> dict:
     """ฟังก์ชันหลัก: ศูนย์กลางควบคุมการสกัดข้อมูล"""
     try:
-        # 1. ทำความสะอาดและคลายปมลิงก์
         url = clean_mobile_url(url)
-        url = resolve_facebook_share(url) # 🌟 เรียกใช้ตัวแปลงร่างลิงก์มือถือเป็นหน้าเว็บตรงนี้!
+        url = unquote(url.strip()) # 🛠️ แปลงภาษาไทยดิบๆ ให้เป็นมาตรฐาน
         url = expand_url(url)
         url = clean_mobile_url(url) 
         
-        # 2. ตรวจสอบวิดีโอ
         VIDEO_PATTERNS = [
             r'youtube\.com/watch', r'youtu\.be', r'youtube\.com/shorts',
             r'tiktok\.com', r'vt\.tiktok\.com', r'vm\.tiktok\.com',
             r'facebook\.com/.*/videos/', r'fb\.watch', r'/share/v/', r'/share/r/', 
             r'vimeo\.com', r'dailymotion\.com'
         ]
-        if any(re.search(p, url.lower()) for p in VIDEO_PATTERNS): return {"error": "VIDEO_DETECTED"}
+        
+        if any(re.search(p, url.lower()) for p in VIDEO_PATTERNS): 
+            return {"error": "VIDEO_DETECTED"}
 
-        # 3. ตรวจสอบเว็บพนัน
         gambling_keywords = r'(สล็อต|บาคาร่า|เว็บตรง|pg slot|คาสิโน|แทงบอล|หวยออนไลน์|ฝากถอนไม่มีขั้นต่ำ|แตกง่าย|ปั่นสล็อต|เครดิตฟรี|เว็บพนัน|สล็อตออนไลน์)'
-        if re.search(r'(slot|casino|ufa\d+|pgslot|เว็บพนัน)', url.lower()): return {"error": "GAMBLING_DETECTED"}
+        if re.search(r'(slot|casino|ufa\d+|pgslot|เว็บพนัน)', url.lower()): 
+            return {"error": "GAMBLING_DETECTED"}
 
-        # 4. แยกการทำงาน
         social_domains = ["facebook.com", "fb.watch", "x.com", "twitter.com", "tiktok.com", "instagram.com"]
         is_social = any(domain in url.lower() for domain in social_domains)
         
@@ -274,7 +282,8 @@ def extract_text_from_url(url: str) -> dict:
                 if fallback_content: 
                     content = fallback_content
                 else: 
-                    return {"error": content}
+                    # 🚨 [ลบคำว่า Error ออก] เพื่อไม่ให้ app.py เด้งหน้าจอ "ระบบความปลอดภัย..." ผิดพลาด
+                    return {"error": "ไม่สามารถดึงข้อมูลจากแพลตฟอร์มนี้ได้"}
                 
             hidden_news_url = force_extract_news_link(url)
             if hidden_news_url:
@@ -283,8 +292,10 @@ def extract_text_from_url(url: str) -> dict:
                 
                 if actual_news_content:
                     final_content = f"[พรีวิวจากโซเชียล]:\n{content}\n\n[เนื้อหาข่าวจริงที่ซ่อนอยู่ ({actual_primary_url})]:\n{actual_news_content}"
+                    
                     if re.search(gambling_keywords, final_content, re.IGNORECASE): 
                         return {"error": "GAMBLING_DETECTED"}
+                        
                     return {"content": final_content, "actual_url": actual_primary_url}
             
             return {"content": content, "actual_url": actual_primary_url}
@@ -296,7 +307,7 @@ def extract_text_from_url(url: str) -> dict:
                     return {"error": "GAMBLING_DETECTED"}
                 return {"content": actual_news_content, "actual_url": url}
             else:
-                return {"error": "Error: ไม่สามารถดึงข้อมูลเว็บข่าวได้ หรือเซิร์ฟเวอร์ปฏิเสธการเข้าถึง"}
+                return {"error": "ไม่สามารถดึงข้อมูลจากเว็บไซต์นี้ได้"} # 🚨 ลบคำว่า Error ออก
                 
     except Exception as e:
-        return {"error": f"Error: ระบบสกัดข้อมูลขัดข้อง - {str(e)}"}
+        return {"error": "ระบบสกัดข้อมูลขัดข้อง"}
