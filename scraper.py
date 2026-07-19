@@ -78,19 +78,24 @@ def is_valid_content(title: str, text: str, url: str) -> bool:
     combined = f"{title} {text}".lower()
     
     # 1. เช็ค URL ปลายทางว่าโดนเตะเข้าหน้าแอปหรือ Login หรือไม่
-    bad_urls = ['messenger.com', 'apps.apple.com', 'play.google.com', 'facebook.com/login']
+    bad_urls = ['messenger.com', 'apps.apple.com', 'play.google.com', 'facebook.com/login', 'm.facebook.com/login']
     if any(bad in url.lower() for bad in bad_urls):
         return False
         
-    # 2. เช็ค Title (หัวเรื่อง) ถ้าเป็นชื่อแพลตฟอร์มลอยๆ แปลว่าดึงมาได้แค่หน้าโฆษณา
-    bad_exact_titles = ['facebook', 'messenger', 'log in', 'เข้าสู่ระบบ', 'log in to facebook', 'messenger - text and video chat for free']
+    # 2. เช็ค Title (หัวเรื่อง) ดักจับคำที่มาจากหน้าบล็อกของ Facebook/Messenger
+    bad_exact_titles = [
+        'facebook', 'messenger', 'log in', 'เข้าสู่ระบบ', 'log in to facebook', 
+        'messenger - text and video chat for free', 'messenger - โทรและส่งข้อความฟรี',
+        'facebook - เข้าสู่ระบบหรือสมัครใช้งาน', 'ยินดีต้อนรับสู่ facebook'
+    ]
     if title.strip().lower() in bad_exact_titles:
         return False
         
-    # 3. สแกนหาความหนาแน่นของคำโฆษณาระบบ (ถ้าเจอเยอะเกินไปคือขยะ)
+    # 3. สแกนหาความหนาแน่นของคำโฆษณาระบบ (ถ้าเจอเยอะเกินไปคือหน้า Login แน่นอน)
     system_keywords = [
         'เข้าสู่ระบบ', 'สมัครใช้งาน', 'ลืมรหัสผ่าน', 'เชื่อมต่อกับเพื่อน', 'social utility',
-        'ส่งข้อความ', 'วิดีโอคอล', 'ฟีเจอร์', 'แอปพลิเคชัน', 'ดาวน์โหลด', 'messenger'
+        'ส่งข้อความ', 'วิดีโอคอล', 'ฟีเจอร์', 'แอปพลิเคชัน', 'ดาวน์โหลด', 'messenger',
+        'เข้าสู่ระบบ facebook', 'สร้างบัญชีใหม่'
     ]
     hit_count = sum(1 for word in system_keywords if word in combined)
     if hit_count >= 3: 
@@ -314,8 +319,9 @@ def extract_text_from_url(url: str) -> dict:
             final_content = final_content.strip()
             
             # 🚨 ด่านสุดท้าย: ถ้าไม่มีอะไรเหลือเลย ให้รายงานกลับผู้ใช้โดยตรง ไม่กวน AI 
+            # 🚨 ด่านสุดท้าย: ถ้าไม่มีอะไรเหลือเลย ให้รายงานกลับผู้ใช้โดยตรง ไม่กวน AI 
             if not final_content:
-                return {"error": "ไม่สามารถตรวจสอบลิงก์นี้ได้ เนื่องจากแพลตฟอร์มป้องกันการเข้าถึง (คุณสามารถคัดลอกข้อความมาระบุเองได้ในแท็บ 'ตรวจสอบข้อความ')"}
+                return {"error": "Error: SOCIAL_BLOCKED ไม่สามารถตรวจสอบลิงก์นี้ได้ เนื่องจาก Facebook บล็อกระบบ Cloud (กรุณาคัดลอกข้อความไปตรวจสอบด้วยตนเองในแท็บ 'ตรวจสอบจากข้อความ')"}
                 
             if re.search(gambling_keywords, final_content, re.IGNORECASE): 
                 return {"error": "GAMBLING_DETECTED"}
