@@ -106,7 +106,7 @@ def extract_social_metadata(url: str) -> str:
                 try:
                     res = requests.get(embed_url, headers=headers, timeout=12)
                     if res.status_code == 200:
-                        soup = BeautifulSoup(res.text, 'html.parser')
+                        soup = BeautifulSoup(res.content, 'html.parser')
                         caption_div = soup.find(class_='Caption')
                         if caption_div:
                             user_tag = caption_div.find(class_='CaptionUsername')
@@ -118,7 +118,7 @@ def extract_social_metadata(url: str) -> str:
                 except Exception: pass
             return "Error: ไม่สามารถทะลวงระบบความปลอดภัยของ Instagram ได้ในขณะนี้"
 
-        # 🚀 [อัปเกรด] ติดตั้งเครื่องกรองโค้ดและภาษาต่างดาวสำหรับ Facebook
+        # 🚀 [อัปเกรดล่าสุด] แกะรหัสภาษาต่างดาวและขยะ Unicode จาก Facebook
         elif "facebook.com" in url or "fb.watch" in url:
             try:
                 req_headers = {
@@ -127,40 +127,53 @@ def extract_social_metadata(url: str) -> str:
                 }
                 res_meta = requests.get(url, headers=req_headers, timeout=15, allow_redirects=True)
                 
-                # 🚨 ปรับ Encoding ให้รองรับภาษาไทย 100% (แก้ปัญหาภาษาต่างดาว)
-                if res_meta.encoding is None or res_meta.encoding.lower() == 'iso-8859-1':
-                    res_meta.encoding = res_meta.apparent_encoding or 'utf-8'
-                else:
-                    res_meta.encoding = res_meta.apparent_encoding or res_meta.encoding
-                    
-                soup_meta = BeautifulSoup(res_meta.text, 'html.parser')
+                # 🚨 บังคับใช้ UTF-8 100% ห้ามให้ระบบเดาเอง (แก้ปัญหาภาษาต่างดาว)
+                res_meta.encoding = 'utf-8'
+                
+                # ใช้ res.content เพื่อป้องกันการถอดรหัสผิดพลาด
+                soup_meta = BeautifulSoup(res_meta.content, 'html.parser', from_encoding='utf-8')
                 
                 og_title = soup_meta.find("meta", property="og:title") or soup_meta.find("meta", attrs={"name": "og:title"})
                 og_desc = soup_meta.find("meta", property="og:description") or soup_meta.find("meta", attrs={"name": "og:description"})
                 
                 title = og_title["content"] if og_title else ""
                 desc = og_desc["content"] if og_desc else ""
+                
+                # 🚨 แก้ปัญหาโค้ด \u0e01 ที่เฟซบุ๊กชอบเข้ารหัสซ่อนไว้
+                if r'\u' in title:
+                    try: title = title.encode('utf-8').decode('unicode_escape')
+                    except: pass
+                if r'\u' in desc:
+                    try: desc = desc.encode('utf-8').decode('unicode_escape')
+                    except: pass
+                
                 fb_text = f"{title}\n{desc}".strip()
                 
-                # 🚨 ตัวทำความสะอาดขั้นสุด: ลบโค้ด JSON/JS ที่เฟซบุ๊กชอบแอบยัดมา
-                fb_text = html.unescape(fb_text) # แก้พวก &amp; ให้เป็นภาษาปกติ
-                fb_text = BeautifulSoup(fb_text, "html.parser").get_text(separator=' ') # ลบ Tag HTML ที่ตกหล่น
-                fb_text = re.sub(r'\{.*?\}', '', fb_text) # ลบโค้ดปีกกา JSON
-                fb_text = re.sub(r'function\s*\(.*?\)\s*\{.*?\}', '', fb_text) # ลบฟังก์ชัน JS
-                fb_text = fb_text.strip()
+                # 🚨 ล้าง HTML Tags และโค้ด JSON/JS ที่ตกหล่น
+                fb_text = html.unescape(fb_text)
+                fb_text = re.sub(r'<[^>]+>', ' ', fb_text)
+                fb_text = re.sub(r'\{.*?\}', '', fb_text)
+                fb_text = re.sub(r'function\s*\(.*?\)\s*\{.*?\}', '', fb_text)
+                fb_text = re.sub(r'\s+', ' ', fb_text).strip()
+                
+                # 🚨 ตัวสแกน "ภาษาคน": นับจำนวนอักษรไทย-อังกฤษ ถ้าน้อยไปแปลว่าเป็นโค้ดขยะ
+                letters = re.findall(r'[ก-๙a-zA-Z]', fb_text)
                 
                 garbage_patterns = r'(log in to facebook|เข้าสู่ระบบ|error 404|page not found|ไม่พบหน้านี้|สมัครใช้งาน|create new account|forgotten password|security check)'
                 if not fb_text or re.search(garbage_patterns, fb_text, re.IGNORECASE):
                     return "Error: Facebook บล็อกแคปชั่น (ติด Login Wall)"
                 elif len(fb_text) < 20 and "facebook" in fb_text.lower():
                     return "Error: ดึงมาได้เพียงชื่อเพจ ไม่มีเนื้อหาข่าว"
+                elif len(letters) < 15:
+                    # ถ้าเจอแต่สัญลักษณ์แปลกๆ ให้คืนค่า Error เพื่อบังคับระบบหลักไปดึงลิงก์ข่าวอิสระแทน
+                    return "Error: ข้อมูลที่ดึงมาเป็นขยะรหัส (Unreadable Text)"
                     
                 return f"โพสต์จาก Facebook:\n{fb_text}"
             except Exception:
                 return "Error: ขัดข้องระหว่างดึงแคปชั่น"
 
         response = requests.get(url, headers=headers, timeout=15)
-        soup = BeautifulSoup(response.text, 'html.parser')
+        soup = BeautifulSoup(response.content, 'html.parser')
         og_title = soup.find("meta", property="og:title") or soup.find("meta", attrs={"name": "og:title"})
         og_desc = soup.find("meta", property="og:description") or soup.find("meta", attrs={"name": "og:description"})
         title = og_title["content"] if og_title else (soup.title.string if soup.title else "")
@@ -171,6 +184,7 @@ def extract_social_metadata(url: str) -> str:
         return f"Error: การสกัดข้อมูล Social Media ล้มเหลว - {str(e)}"
 
 def force_extract_news_link(social_url: str) -> str:
+    """ทะลวงหาลิงก์ข่าวจริง โดยอิงตาม Whitelist ก่อน ถ้าไม่เจอให้ดึงลิงก์บล็อกอิสระที่ซ่อนอยู่"""
     if "x.com" in social_url.lower() or "twitter.com" in social_url.lower(): return ""
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)"}
     if "facebook.com" in social_url.lower() or "fb.watch" in social_url.lower():
@@ -219,9 +233,8 @@ def fetch_with_fallback(url: str) -> str:
     try:
         res = requests.get(url, headers=headers, timeout=15, allow_redirects=True)
         if res.status_code == 200:
-            if res.encoding is None or res.encoding.lower() == 'iso-8859-1':
-                res.encoding = res.apparent_encoding or 'utf-8'
-            soup = BeautifulSoup(res.text, 'html.parser')
+            # 🚨 เปลี่ยนมาใช้ res.content แก้ปัญหาหน้าเว็บอ่านข่าวแสดงภาษาเพี้ยน
+            soup = BeautifulSoup(res.content, 'html.parser')
             for element in soup(["script", "style", "nav", "header", "footer", "aside", "noscript"]): element.extract()
             clean_text = re.sub(r'\s+', ' ', soup.get_text(separator=' ', strip=True)).strip()
             if len(clean_text) > 100 and not re.search(anti_bot_patterns, clean_text, re.IGNORECASE):
@@ -233,9 +246,7 @@ def fetch_with_fallback(url: str) -> str:
         response = requests.get(jina_url, headers={"Accept": "text/plain", "X-Retain-Images": "none"}, timeout=20)
         if response.status_code == 200:
             content = response.text
-            # 🚨 ดักจับ Jina AI หากมันพ่นข้อความ Error ที่เป็น JSON กลับมาเป็น Text
-            if content.strip().startswith('{') and content.strip().endswith('}'):
-                return ""
+            if content.strip().startswith('{') and content.strip().endswith('}'): return ""
             if len(content.strip()) > 100 and not re.search(anti_bot_patterns, content, re.IGNORECASE): 
                 return content
     except Exception: pass
