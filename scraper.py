@@ -40,11 +40,44 @@ def clean_mobile_url(url: str) -> str:
             
     return url
 
-def resolve_facebook_share_link(url: str) -> str:
-    """ทะลวงลิงก์ Facebook Share ข้ามการบล็อก IP บน Cloud"""
-    if "facebook.com/share/" not in url.lower():
+def resolve_facebook_redirects(url: str) -> str:
+    """ทะลวงลิงก์ Facebook Share ข้ามการบล็อก IP บน Cloud ด้วยกุญแจผี"""
+    if "facebook.com/share/" not in url.lower() and "fb.watch" not in url.lower():
         return url
         
+    try:
+        # 🚀 ท่าที่ 1: ใช้กุญแจผี WhatsApp ข้าม WAF ของ Cloud แบบไม่ตาม Redirect เพื่อดักจับเป้าหมาย
+        bot_headers = {
+            "User-Agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
+            "Accept-Language": "th-TH,th;q=0.9,en-US;q=0.8,en;q=0.7"
+        }
+        res = requests.get(url, headers=bot_headers, timeout=10, allow_redirects=False)
+        
+        loc = ""
+        if res.status_code in [301, 302, 303, 307, 308]:
+            loc = res.headers.get('Location', '')
+        elif res.status_code == 200:
+            js_match = re.search(r'location\.(?:replace|href)\s*=?\s*\(?["\'](.*?)["\']\)?', res.text, re.IGNORECASE)
+            meta_match = re.search(r'http-equiv=["\']?refresh["\']?[^>]*url=["\']?([^"\'>]+)["\']?', res.text, re.IGNORECASE)
+            if js_match:
+                loc = js_match.group(1).replace('\\/', '/')
+            elif meta_match:
+                loc = meta_match.group(1)
+                
+        if loc:
+            if loc.startswith('/'):
+                loc = "https://www.facebook.com" + loc
+            
+            if "next=" in loc.lower():
+                real_url = unquote(loc.split("next=")[1].split("&")[0])
+                if "facebook.com/share/" not in real_url.lower() and "login" not in real_url.lower():
+                    return real_url
+            elif "facebook.com/share/" not in loc.lower() and "login" not in loc.lower():
+                return loc
+    except Exception:
+        pass
+
+    # 🚀 ท่าที่ 2: สำรองด้วย Proxy เผื่อเจอกรณีแปลกๆ
     try:
         proxy_url = f"https://api.allorigins.win/get?url={quote(url)}"
         res_proxy = requests.get(proxy_url, timeout=15)
@@ -59,40 +92,6 @@ def resolve_facebook_share_link(url: str) -> str:
                 real_url = unquote(final_url.split("next=")[1].split("&")[0])
                 if "facebook.com/share/" not in real_url.lower() and "login" not in real_url.lower():
                     return real_url
-            
-            contents = data.get("contents", "")
-            js_match = re.search(r'location\.(?:replace|href)\s*=?\s*\(?["\'](.*?)["\']\)?', contents, re.IGNORECASE)
-            if js_match:
-                real_url = js_match.group(1).replace('\\/', '/')
-                if real_url.startswith('/'):
-                    real_url = "https://www.facebook.com" + real_url
-                if "facebook.com/share/" not in real_url.lower() and "login" not in real_url.lower():
-                    return real_url
-    except Exception:
-        pass
-
-    try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Accept-Language": "th-TH,th;q=0.9,en-US;q=0.8,en;q=0.7"
-        }
-        res = requests.get(url, headers=headers, timeout=10, allow_redirects=True)
-        
-        if "facebook.com/share/" not in res.url.lower() and "login" not in res.url.lower():
-            return res.url
-            
-        if "next=" in res.url.lower():
-            real_url = unquote(res.url.split("next=")[1].split("&")[0])
-            if "facebook.com/share/" not in real_url.lower() and "login" not in real_url.lower():
-                return real_url
-        
-        js_match = re.search(r'location\.(?:replace|href)\s*=?\s*\(?["\'](.*?)["\']\)?', res.text, re.IGNORECASE)
-        if js_match:
-            real_url = js_match.group(1).replace('\\/', '/')
-            if real_url.startswith('/'):
-                real_url = "https://www.facebook.com" + real_url
-            if "facebook.com/share/" not in real_url.lower() and "login" not in real_url.lower():
-                return real_url
     except Exception:
         pass
         
@@ -100,7 +99,8 @@ def resolve_facebook_share_link(url: str) -> str:
 
 def expand_url(url: str) -> str:
     """แกะลิงก์ย่อต่างๆ ให้เป็นลิงก์เต็ม"""
-    redirectors = ['shorturl.', 'bit.ly', 'tinyurl.', 't.co', 'cutt.ly', 'rebrand.ly', 'lnkd.in', 'fb.watch', '/share/p/', '/share/v/', '/share/r/', '/share/', 'vt.tiktok.com', 'vm.tiktok.com', 'youtu.be', 'line.me', 'liff.line.me']
+    # 🚨 ลบ Facebook และ /share/ ออกจากตรงนี้ เพื่อไม่ให้ Cloud โดนแบนเวลาใช้ UA ของ iPhone
+    redirectors = ['shorturl.', 'bit.ly', 'tinyurl.', 't.co', 'cutt.ly', 'rebrand.ly', 'lnkd.in', 'vt.tiktok.com', 'vm.tiktok.com', 'youtu.be', 'line.me', 'liff.line.me']
     
     if any(r in url.lower() for r in redirectors):
         try:
@@ -181,11 +181,10 @@ def extract_social_metadata(url: str) -> str:
                 pass
             return "Error: ไม่สามารถทะลวงระบบความปลอดภัยของ Instagram ได้ในขณะนี้"
 
-        # ================= 3. Facebook (อัปเกรดกัน AI ปัดตก) =================
+        # ================= 3. Facebook =================
         elif "facebook.com" in url or "fb.watch" in url:
             fb_text = ""
             
-            # ท่าที่ 1: ดึงแคปชั่นเต็มผ่าน Facebook Embed
             try:
                 safe_url = quote(url, safe=":/%?=&-_.#")
                 embed_url = f"https://www.facebook.com/plugins/post.php?href={safe_url}"
@@ -200,7 +199,6 @@ def extract_social_metadata(url: str) -> str:
             except Exception:
                 pass
                 
-            # ท่าที่ 2: ดึง Meta Tags ผ่านกุญแจผี
             req_headers = {"User-Agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"}
             res_meta = requests.get(url, headers=req_headers, timeout=15, allow_redirects=True)
             res_meta.encoding = 'utf-8'
@@ -213,11 +211,8 @@ def extract_social_metadata(url: str) -> str:
             desc = og_desc["content"] if og_desc else ""
             meta_text = f"{title}\n{desc}".strip()
             
-            # รวมพลังทั้ง 2 ท่าเข้าด้วยกัน เพื่อให้เนื้อหาแน่นที่สุด
             final_fb_content = f"{meta_text}\n\n{fb_text}".strip()
             
-            # 🛡️ ตัวกรองสำคัญ: ถ้าดึงมาได้สั้นเกินไป (ไม่มีเนื้อหา) ให้ตีเป็น Error 
-            # เพื่อให้โค้ดข้างล่างสั่งงาน force_extract_news_link ไปขุดลิงก์ข่าวจริงมาให้แทน!
             if not final_fb_content or re.search(r'(log in to facebook|เข้าสู่ระบบ)', final_fb_content, re.IGNORECASE):
                 return "Error: Facebook บล็อกด้วยหน้า Login Wall"
             elif len(final_fb_content) < 60: 
@@ -301,7 +296,7 @@ def extract_text_from_url(url: str) -> dict:
     """ศูนย์กลางสกัดข้อมูล"""
     try:
         url = clean_mobile_url(url)
-        url = resolve_facebook_share_link(url)
+        url = resolve_facebook_redirects(url) # 🚀 ย้ายมาใช้เครื่องมือใหม่ 
         url = expand_url(url)
         url = clean_mobile_url(url) 
         
@@ -334,7 +329,6 @@ def extract_text_from_url(url: str) -> dict:
                 fallback_content = fetch_with_fallback(actual_primary_url)
                 if fallback_content: content = fallback_content
                 else: 
-                    # ถ้า Fallback ไม่ได้ ก็ให้ไปบังคับขุดลิงก์ข่าวเลย
                     pass
                 
             hidden_news_url = force_extract_news_link(url)
