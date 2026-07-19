@@ -4,10 +4,9 @@ from bs4 import BeautifulSoup
 from urllib.parse import unquote, quote
 
 def clean_mobile_url(url: str) -> str:
-    """เคลียร์ Tracking และปรับมาตรฐานการเข้ารหัสของลิงก์จากมือถือ (อัปเกรดครอบคลุม iOS/Android)"""
+    """เคลียร์ Tracking และปรับมาตรฐานการเข้ารหัสของลิงก์จากมือถือ"""
     url = unquote(url.strip())
     
-    # เคลียร์ # ที่ติดมาตอนท้ายลิงก์ FB iOS
     if url.endswith('#'):
         url = url[:-1]
         
@@ -23,14 +22,12 @@ def clean_mobile_url(url: str) -> str:
     if "?" in url:
         base_url, query_str = url.split("?", 1)
         
-        # แยกเครื่องหมาย # ออกจากพารามิเตอร์เผื่อมันซ่อนอยู่ข้างใน
         fragment = ""
         if "#" in query_str:
             query_str, fragment = query_str.split("#", 1)
             fragment = "#" + fragment
             
         params = query_str.split("&")
-        # 🚀 [เพิ่มการบล็อกพารามิเตอร์ขยะ]: rdid, share_url (ของ FB) และ utm_ (ของ LINE/X)
         clean_params = [
             p for p in params 
             if not p.startswith(('mibextid=', 'igsh=', 'si=', 'fbclid=', 'is_from_webapp=', 'h=', 's=', 't=', 'rdid=', 'share_url=', 'utm_'))
@@ -103,7 +100,6 @@ def resolve_facebook_share_link(url: str) -> str:
 
 def expand_url(url: str) -> str:
     """แกะลิงก์ย่อต่างๆ ให้เป็นลิงก์เต็ม"""
-    # 🚀 [เพิ่มการดักจับ]: liff.line.me เพื่อให้แอปตามลิงก์ไปถึงหน้าข่าว today.line.me จริงๆ
     redirectors = ['shorturl.', 'bit.ly', 'tinyurl.', 't.co', 'cutt.ly', 'rebrand.ly', 'lnkd.in', 'fb.watch', '/share/p/', '/share/v/', '/share/r/', '/share/', 'vt.tiktok.com', 'vm.tiktok.com', 'youtu.be', 'line.me', 'liff.line.me']
     
     if any(r in url.lower() for r in redirectors):
@@ -129,6 +125,7 @@ def expand_url(url: str) -> str:
 def extract_social_metadata(url: str) -> str:
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)"}
     try:
+        # ================= 1. Twitter (X) =================
         if "x.com/" in url or "twitter.com/" in url:
             match = re.search(r'(?:x|twitter)\.com(/.*)', url)
             if match:
@@ -143,6 +140,7 @@ def extract_social_metadata(url: str) -> str:
                 else:
                     return f"Error: API ของ X ปฏิเสธการดึงข้อมูล ({res.status_code})"
 
+        # ================= 2. Instagram =================
         elif "instagram.com/" in url:
             match = re.search(r'instagram\.com/(?:p|reel|tv)/([^/?]+)', url)
             if match:
@@ -174,10 +172,8 @@ def extract_social_metadata(url: str) -> str:
                         soup = BeautifulSoup(response.text, 'html.parser')
                         og_title = soup.find("meta", property="og:title") or soup.find("meta", attrs={"name": "og:title"})
                         og_desc = soup.find("meta", property="og:description") or soup.find("meta", attrs={"name": "og:description"})
-                        
                         title = og_title["content"] if og_title and og_title.get("content") else ""
                         desc = og_desc["content"] if og_desc and og_desc.get("content") else ""
-                        
                         if title or desc:
                             if "Login" not in title and "เข้าสู่ระบบ" not in desc:
                                 return f"{title}\n{desc}".strip()
@@ -185,13 +181,52 @@ def extract_social_metadata(url: str) -> str:
                 pass
             return "Error: ไม่สามารถทะลวงระบบความปลอดภัยของ Instagram ได้ในขณะนี้"
 
-        req_headers = headers.copy()
-        if "facebook.com" in url or "fb.watch" in url:
+        # ================= 3. Facebook (อัปเกรดกัน AI ปัดตก) =================
+        elif "facebook.com" in url or "fb.watch" in url:
+            fb_text = ""
+            
+            # ท่าที่ 1: ดึงแคปชั่นเต็มผ่าน Facebook Embed
+            try:
+                safe_url = quote(url, safe=":/%?=&-_.#")
+                embed_url = f"https://www.facebook.com/plugins/post.php?href={safe_url}"
+                res_fb = requests.get(embed_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+                if res_fb.status_code == 200:
+                    soup_fb = BeautifulSoup(res_fb.text, 'html.parser')
+                    text_parts = [p.get_text(strip=True) for p in soup_fb.find_all(['p', 'span']) if len(p.get_text(strip=True)) > 20]
+                    if text_parts:
+                        ext_text = "\n".join(set(text_parts))
+                        if not re.search(r'(เข้าสู่ระบบ|Log In|Log in to Facebook)', ext_text, re.IGNORECASE):
+                            fb_text = ext_text
+            except Exception:
+                pass
+                
+            # ท่าที่ 2: ดึง Meta Tags ผ่านกุญแจผี
             req_headers = {"User-Agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"}
+            res_meta = requests.get(url, headers=req_headers, timeout=15, allow_redirects=True)
+            res_meta.encoding = 'utf-8'
+            soup_meta = BeautifulSoup(res_meta.text, 'html.parser')
+            
+            og_title = soup_meta.find("meta", property="og:title") or soup_meta.find("meta", attrs={"name": "og:title"})
+            og_desc = soup_meta.find("meta", property="og:description") or soup_meta.find("meta", attrs={"name": "og:description"})
+            
+            title = og_title["content"] if og_title else ""
+            desc = og_desc["content"] if og_desc else ""
+            meta_text = f"{title}\n{desc}".strip()
+            
+            # รวมพลังทั้ง 2 ท่าเข้าด้วยกัน เพื่อให้เนื้อหาแน่นที่สุด
+            final_fb_content = f"{meta_text}\n\n{fb_text}".strip()
+            
+            # 🛡️ ตัวกรองสำคัญ: ถ้าดึงมาได้สั้นเกินไป (ไม่มีเนื้อหา) ให้ตีเป็น Error 
+            # เพื่อให้โค้ดข้างล่างสั่งงาน force_extract_news_link ไปขุดลิงก์ข่าวจริงมาให้แทน!
+            if not final_fb_content or re.search(r'(log in to facebook|เข้าสู่ระบบ)', final_fb_content, re.IGNORECASE):
+                return "Error: Facebook บล็อกด้วยหน้า Login Wall"
+            elif len(final_fb_content) < 60: 
+                return "Error: เนื้อหาสั้นเกินไป ระบบจะพยายามค้นหาลิงก์ข่าวที่ซ่อนอยู่"
+                
+            return f"โพสต์จาก Facebook:\n{final_fb_content}"
 
-        # 🚀 [อัปเกรด]: ปล่อยให้ระบบตาม Redirect ของเฟซบุ๊กได้เลย เผื่อเจอหน้าจริง
-        response = requests.get(url, headers=req_headers, timeout=15, allow_redirects=True)
-        response.encoding = 'utf-8'
+        # ================= 4. Social ทั่วไปอื่นๆ =================
+        response = requests.get(url, headers=headers, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
         
         og_title = soup.find("meta", property="og:title") or soup.find("meta", attrs={"name": "og:title"})
@@ -199,11 +234,6 @@ def extract_social_metadata(url: str) -> str:
         
         title = og_title["content"] if og_title else (soup.title.string if soup.title else "")
         desc = og_desc["content"] if og_desc else ""
-        
-        if "facebook.com" in url or "fb.watch" in url:
-            title_lower = title.strip().lower()
-            if not desc and (title_lower == "facebook" or "log in" in title_lower or "เข้าสู่ระบบ" in title_lower):
-                return "Error: Facebook บล็อกด้วยหน้า Login Wall"
         
         return f"{title}\n{desc}".strip()
         
@@ -273,7 +303,7 @@ def extract_text_from_url(url: str) -> dict:
         url = clean_mobile_url(url)
         url = resolve_facebook_share_link(url)
         url = expand_url(url)
-        url = clean_mobile_url(url) # ล้างอีกรอบ เผื่อแกะลิงก์แล้วเจอขยะเพิ่ม
+        url = clean_mobile_url(url) 
         
         VIDEO_PATTERNS = [
             r'youtube\.com/watch', r'youtu\.be', r'youtube\.com/shorts',
@@ -303,7 +333,9 @@ def extract_text_from_url(url: str) -> dict:
             if "Error" in content:
                 fallback_content = fetch_with_fallback(actual_primary_url)
                 if fallback_content: content = fallback_content
-                else: return {"error": content}
+                else: 
+                    # ถ้า Fallback ไม่ได้ ก็ให้ไปบังคับขุดลิงก์ข่าวเลย
+                    pass
                 
             hidden_news_url = force_extract_news_link(url)
             if hidden_news_url:
@@ -315,6 +347,9 @@ def extract_text_from_url(url: str) -> dict:
                     if re.search(gambling_keywords, final_content, re.IGNORECASE): return {"error": "GAMBLING_DETECTED"}
                     return {"content": final_content, "actual_url": actual_primary_url}
             
+            if "Error" in content:
+                return {"error": "ไม่สามารถดึงข้อมูลข่าวสารที่มีเนื้อหาเพียงพอจากโพสต์นี้ได้"}
+                
             return {"content": content, "actual_url": actual_primary_url}
             
         else:
