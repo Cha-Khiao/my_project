@@ -11,14 +11,12 @@ from urllib.parse import unquote, quote, urlparse, parse_qs, urlencode, urlunpar
 def clean_mobile_url(url: str) -> str:
     url = unquote(url.strip())
     
-    # ดึงเฉพาะ URL ออกจากข้อความ (เผื่อผู้ใช้แชร์จากมือถือแล้วมีข้อความภาษาไทยปนมา)
     url_match = re.search(r'(https?://[^\s]+)', url)
     if url_match:
         url = url_match.group(1)
         
     if url.endswith('#'): url = url[:-1]
     
-    # แกะลิงก์ Redirect ของ Facebook
     if "l.facebook.com/l.php?u=" in url:
         try: url = unquote(url.split("u=")[1].split("&")[0])
         except Exception: pass
@@ -26,17 +24,11 @@ def clean_mobile_url(url: str) -> str:
     url = url.replace("://m.facebook.com", "://www.facebook.com")
     url = url.replace("://mobile.twitter.com", "://twitter.com")
     
-    # จัดการ Query Parameters ที่เป็น Tracking ด้วย urlparse (ปลอดภัยและรองรับอนาคตได้ดีกว่า)
     parsed = urlparse(url)
     if parsed.query:
         query_dict = parse_qs(parsed.query)
-        # รายชื่อพารามิเตอร์ขยะที่มาจากมือถือและโซเชียล
         spam_params = ['mibextid', 'igsh', 'si', 'fbclid', 'is_from_webapp', 'h', 's', 't', 'rdid', 'share_url', 'utm_']
-        
-        # คัดเอาเฉพาะ Parameter ที่ไม่ใช่ขยะ
         clean_query = {k: v for k, v in query_dict.items() if not any(k.startswith(spam) for spam in spam_params)}
-        
-        # ประกอบ URL กลับคืน
         parsed = parsed._replace(query=urlencode(clean_query, doseq=True))
         url = urlunparse(parsed)
         
@@ -77,40 +69,36 @@ def is_valid_content(title: str, text: str, url: str) -> bool:
     """
     combined = f"{title} {text}".lower()
     
-    # 1. เช็ค URL ปลายทางว่าโดนเตะเข้าหน้าแอปหรือ Login หรือไม่
-    bad_urls = ['messenger.com', 'apps.apple.com', 'play.google.com', 'facebook.com/login', 'm.facebook.com/login']
+    # 1. เช็ค URL ปลายทางอย่างเข้มงวด (กัน Cloud โดนเตะเข้า Login)
+    bad_urls = ['messenger.com', 'apps.apple.com', 'play.google.com', 'facebook.com/login', 'm.facebook.com/login', 'l.facebook.com/l.php']
     if any(bad in url.lower() for bad in bad_urls):
         return False
         
-    # 2. เช็ค Title (หัวเรื่อง) ดักจับคำที่มาจากหน้าบล็อกของ Facebook/Messenger
-    bad_exact_titles = [
-        'facebook', 'messenger', 'log in', 'เข้าสู่ระบบ', 'log in to facebook', 
-        'messenger - text and video chat for free', 'messenger - โทรและส่งข้อความฟรี',
-        'facebook - เข้าสู่ระบบหรือสมัครใช้งาน', 'ยินดีต้อนรับสู่ facebook'
-    ]
-    if title.strip().lower() in bad_exact_titles:
+    # 2. กวาดล้าง Title ที่เป็นหน้า Login/Messenger (ดักจับทุกรูปแบบ)
+    bad_title_keywords = ['facebook', 'messenger', 'log in', 'เข้าสู่ระบบ', 'สมัครใช้งาน', 'ยินดีต้อนรับ']
+    title_clean = title.strip().lower()
+    
+    if title_clean in bad_title_keywords or "messenger -" in title_clean or "facebook -" in title_clean:
         return False
         
-    # 3. สแกนหาความหนาแน่นของคำโฆษณาระบบ (ถ้าเจอเยอะเกินไปคือหน้า Login แน่นอน)
+    # 3. สแกนหาคำโฆษณาระบบ (ลดเพดานลงเหลือแค่ 2 คำ ก็เตะทิ้งทันที)
     system_keywords = [
         'เข้าสู่ระบบ', 'สมัครใช้งาน', 'ลืมรหัสผ่าน', 'เชื่อมต่อกับเพื่อน', 'social utility',
-        'ส่งข้อความ', 'วิดีโอคอล', 'ฟีเจอร์', 'แอปพลิเคชัน', 'ดาวน์โหลด', 'messenger',
-        'เข้าสู่ระบบ facebook', 'สร้างบัญชีใหม่'
+        'ส่งข้อความ', 'วิดีโอคอล', 'ฟีเจอร์', 'แอปพลิเคชัน', 'ดาวน์โหลด', 'messenger'
     ]
     hit_count = sum(1 for word in system_keywords if word in combined)
-    if hit_count >= 3: 
+    if hit_count >= 2: 
         return False
         
-    # 4. ล้าง HTML และจัดระเบียบ ก่อนเช็คความยาวจริง
+    # 4. ล้าง HTML และคำสั่ง UI ของ Facebook ออก
     clean_text = html.unescape(text)
     clean_text = re.sub(r'<[^>]+>', ' ', clean_text)
     clean_text = re.sub(r'\{.*?\}', '', clean_text)
     
-    # ลบคำที่เป็นปุ่ม UI ออก เพื่อวัดเนื้อหาที่แท้จริง
-    ui_patterns = r'(ดูโพสต์เพิ่มเติมจาก|ดูเพิ่มเติมจาก|บน Facebook|ไม่ใช่ตอนนี้|วิดีโอที่เกี่ยวข้อง|แนะนำสำหรับคุณ|หาเพื่อนบน Facebook|เปิดใน Messenger)'
+    ui_patterns = r'(ดูโพสต์เพิ่มเติมจาก|ดูเพิ่มเติมจาก|บน Facebook|ไม่ใช่ตอนนี้|วิดีโอที่เกี่ยวข้อง|แนะนำสำหรับคุณ|หาเพื่อนบน Facebook|เปิดใน Messenger|เข้าสู่ระบบ|ลืมรหัสผ่าน)'
     pure_content = re.sub(ui_patterns, '', clean_text, flags=re.IGNORECASE).strip()
     
-    # ถ้าเนื้อหาเพียวๆ น้อยกว่า 40 ตัวอักษร ถือว่าไม่มีข่าว
+    # ถ้าหักลบ UI ออกไปแล้ว เนื้อหาเหลือน้อยกว่า 40 ตัวอักษร ถือว่าดึงแคปชั่นมาไม่ได้
     if len(pure_content) < 40:
         return False
         
@@ -130,7 +118,7 @@ def extract_social_metadata(url: str) -> str:
                 if res.status_code == 200:
                     data = res.json()
                     return f"{data.get('user_name', 'ผู้ใช้งาน X')}\n{data.get('text', '')}".strip()
-                return "Error: API ของ X ปฏิเสธการดึงข้อมูล"
+                return "Error: SOCIAL_BLOCKED - API ของ X ปฏิเสธการดึงข้อมูล"
 
         elif "instagram.com/" in url:
             match = re.search(r'instagram\.com/(?:p|reel|tv)/([^/?]+)', url)
@@ -148,11 +136,10 @@ def extract_social_metadata(url: str) -> str:
                             text = caption_div.get_text(separator='\n', strip=True)
                             if text: return f"โพสต์จาก Instagram:\n{text}"
                 except Exception: pass
-            return "Error: ไม่สามารถทะลวงระบบความปลอดภัยของ Instagram ได้"
+            return "Error: SOCIAL_BLOCKED - ไม่สามารถทะลวงระบบความปลอดภัยของ Instagram ได้"
 
         elif "facebook.com" in url or "fb.watch" in url:
             session = requests.Session()
-            # ปลอมตัวเป็นระบบพรีวิวของ Facebook (Facebook Crawler) เพื่อลดการถูกบล็อก
             req_headers = {
                 "User-Agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)", 
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -176,12 +163,9 @@ def extract_social_metadata(url: str) -> str:
                 fb_desc = decode_thai_text(og_desc['content']) if og_desc else ""
             except Exception: pass
 
-            # นำเข้าสู่ด่านตรวจคนเข้าเมือง (Gateway Validation)
             if not is_valid_content(fb_title, fb_desc, final_url):
-                # แจ้ง Error ให้ชัดเจนและแนะนำทางแก้
-                return "Error: โพสต์ Facebook ถูกจำกัดการเข้าถึง แนะนำให้คัดลอกข้อความไปวางที่แท็บ 'ตรวจสอบจากข้อความ' ครับ"
+                return "Error: SOCIAL_BLOCKED - โพสต์ Facebook ถูกจำกัดการเข้าถึงจากระบบ Cloud"
             
-            # ถ้าผ่านด่านมาได้ แปลว่าเป็นข่าวของจริง ทำการล้างปุ่ม UI ออกก่อนส่งให้ AI
             ui_patterns = r'(ดูโพสต์เพิ่มเติมจาก|ดูเพิ่มเติมจาก|บน Facebook|ไม่ใช่ตอนนี้|วิดีโอที่เกี่ยวข้อง|แนะนำสำหรับคุณ|หาเพื่อนบน Facebook)'
             cleaned_desc = re.sub(ui_patterns, '', fb_desc, flags=re.IGNORECASE).strip()
             
@@ -197,7 +181,7 @@ def extract_social_metadata(url: str) -> str:
         return f"{decode_thai_text(title)}\n{decode_thai_text(desc)}".strip()
         
     except Exception as e:
-        return f"Error: การสกัดข้อมูล Social Media ล้มเหลว - {str(e)}"
+        return f"Error: SOCIAL_BLOCKED - การสกัดข้อมูล Social Media ล้มเหลว - {str(e)}"
 
 def force_extract_news_link(social_url: str) -> str:
     """สกัดลิงก์ข่าวจริงจากโพสต์โซเชียล"""
@@ -219,7 +203,6 @@ def force_extract_news_link(social_url: str) -> str:
         general_url_pattern = r'https?://[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:/[^\s"\'<>\\]*)?'
         all_links = re.findall(general_url_pattern, decoded_html)
         
-        # บล็อกโดเมนระบบและไฟล์โค้ด
         exclude_domains = [
             'facebook.com', 'fb.com', 'fb.watch', 'messenger.com', 'instagram.com', 'whatsapp.com', 
             'x.com', 'twitter.com', 'tiktok.com', 'line.me', 'liff.line.me', 'fbcdn.net', 'akamaihd.net', 
@@ -297,10 +280,7 @@ def extract_text_from_url(url: str) -> dict:
         actual_primary_url = url
         
         if is_social:
-            # 1. พยายามดึงแคปชั่น
             content = extract_social_metadata(url)
-            
-            # 2. พยายามหาลิงก์ข่าวที่ซ่อนอยู่ (แม้จะดึงแคปชั่นไม่ได้ ก็จะพยายามหาลิงก์ซ่อนเสมอ)
             hidden_news_url = force_extract_news_link(url)
             actual_news_content = ""
             
@@ -310,18 +290,18 @@ def extract_text_from_url(url: str) -> dict:
                 
             final_content = ""
             
-            # ผสมเนื้อหา: เอาแคปชั่นที่ตรวจสอบแล้วว่าถูกต้องมารวมกับเนื้อหาข่าวจริง
+            # ตัดวงจร: ถ้าเจอ Error ว่าโดนบล็อก และไม่มีลิงก์ข่าวซ่อนอยู่ ให้จบการทำงานทันที
             if "Error" not in content:
                 final_content += f"{content}\n\n"
+            
             if actual_news_content:
                 final_content += f"[เนื้อหาข่าวที่แนบมา ({actual_primary_url})]:\n{actual_news_content}"
                 
             final_content = final_content.strip()
             
-            # 🚨 ด่านสุดท้าย: ถ้าไม่มีอะไรเหลือเลย ให้รายงานกลับผู้ใช้โดยตรง ไม่กวน AI 
-            # 🚨 ด่านสุดท้าย: ถ้าไม่มีอะไรเหลือเลย ให้รายงานกลับผู้ใช้โดยตรง ไม่กวน AI 
+            # 🚨 ด่านสุดท้าย: ชี้เป้าไปที่ "SOCIAL_BLOCKED" เพื่อให้ app.py แสดง UI สีเหลืองสวยๆ แทนการส่งไปให้ AI ประเมินมั่วๆ
             if not final_content:
-                return {"error": "Error: SOCIAL_BLOCKED ไม่สามารถตรวจสอบลิงก์นี้ได้ เนื่องจาก Facebook บล็อกระบบ Cloud (กรุณาคัดลอกข้อความไปตรวจสอบด้วยตนเองในแท็บ 'ตรวจสอบจากข้อความ')"}
+                return {"error": "Error: SOCIAL_BLOCKED ระบบความปลอดภัยของ Facebook ปฏิเสธการดึงข้อมูลบน Cloud กรุณาคัดลอกข้อความไปตรวจสอบด้วยตนเองในแท็บข้อความ"}
                 
             if re.search(gambling_keywords, final_content, re.IGNORECASE): 
                 return {"error": "GAMBLING_DETECTED"}
@@ -329,7 +309,6 @@ def extract_text_from_url(url: str) -> dict:
             return {"content": final_content, "actual_url": actual_primary_url}
             
         else:
-            # เว็บข่าวทั่วไป
             actual_news_content = fetch_with_fallback(url)
             if actual_news_content:
                 if re.search(gambling_keywords, actual_news_content, re.IGNORECASE): return {"error": "GAMBLING_DETECTED"}
