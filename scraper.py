@@ -117,7 +117,6 @@ def extract_social_metadata(url: str) -> str:
                 except Exception: pass
             return "Error: ไม่สามารถทะลวงระบบความปลอดภัยของ Instagram ได้ในขณะนี้"
 
-        # 🚀 [ดึงเฉพาะเนื้อหาที่สะอาดที่สุดของ Facebook] ป้องกันปุ่มขยะหลุดไปให้ AI อ่าน
         elif "facebook.com" in url or "fb.watch" in url:
             try:
                 req_headers = {"User-Agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"}
@@ -132,7 +131,6 @@ def extract_social_metadata(url: str) -> str:
                 desc = og_desc["content"] if og_desc else ""
                 fb_text = f"{title}\n{desc}".strip()
                 
-                # ถ้าเจอคำพวกนี้ แปลว่าเป็นขยะจากหน้า Login ให้ทิ้งทันที
                 garbage_patterns = r'(log in to facebook|เข้าสู่ระบบ|error 404|page not found|ไม่พบหน้านี้|สมัครใช้งาน|create new account|forgotten password)'
                 if not fb_text or re.search(garbage_patterns, fb_text, re.IGNORECASE):
                     return "Error: Facebook บล็อกแคปชั่น (ติด Login Wall)"
@@ -154,27 +152,52 @@ def extract_social_metadata(url: str) -> str:
     except Exception as e:
         return f"Error: การสกัดข้อมูล Social Media ล้มเหลว - {str(e)}"
 
+# 🚀 [อัปเกรด] ฟังก์ชันค้นหาลิงก์ข่าว: ห้ามผูกมัดเฉพาะ Whitelist รองรับบล็อกข่าวอิสระ
 def force_extract_news_link(social_url: str) -> str:
-    """ทะลวงหาลิงก์ข่าวจริง (Thairath, Khaosod ฯลฯ) ที่ซ่อนอยู่ใน Facebook"""
+    """ทะลวงหาลิงก์ข่าวจริง โดยอิงตาม Whitelist ก่อน ถ้าไม่เจอให้ดึงลิงก์บล็อกอิสระที่ซ่อนอยู่"""
     if "x.com" in social_url.lower() or "twitter.com" in social_url.lower(): return ""
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)"}
     if "facebook.com" in social_url.lower() or "fb.watch" in social_url.lower():
         headers = {"User-Agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"}
+        
     try:
         response = requests.get(social_url, headers=headers, timeout=15, allow_redirects=True)
-        decoded_html = unquote(response.text)
+        # แปลง \\/ เป็น / เพื่อให้อ่าน URL ออก
+        decoded_html = unquote(response.text).replace('\\/', '/') 
+        
+        # 1. กวาดลิงก์ (URL) ทั้งหมดที่อยู่ในโพสต์ออกมา
+        general_url_pattern = r'https?://[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:/[^\s"\'<>\\]*)?'
+        all_links = re.findall(general_url_pattern, decoded_html)
+        
+        # คัดกรองลิงก์ขยะ (ลิงก์โซเชียลกันเอง หรือลิงก์สั้นเกินไป) ออก
+        valid_external_links = []
+        exclude_domains = ['facebook.com', 'fb.com', 'fb.watch', 'messenger.com', 'instagram.com', 'whatsapp.com', 'x.com', 'twitter.com', 'tiktok.com', 'line.me', 'liff.line.me']
+        
+        for link in all_links:
+            clean_link = link.split('?')[0] # ตัดพารามิเตอร์ด้านหลังทิ้ง
+            if any(domain in clean_link.lower() for domain in exclude_domains):
+                continue
+            # เลือกลิงก์ที่มีเส้นทางเนื้อหา (ไม่เอาแค่หน้าแรกเช่น www.example.com/)
+            if len(clean_link.split('/')) >= 4 and not clean_link.endswith('/home'):
+                valid_external_links.append(clean_link)
+                
+        if not valid_external_links:
+            return ""
+
+        # 2. ค้นหาใน Whitelist เป็นอันดับแรก (Priority 1)
         whitelist = ['thairath.co.th', 'khaosod.co.th', 'matichon.co.th', 'dailynews.co.th', 'sanook.com', 'prachachat.net', 'bangkokbiznews.com', 'mgronline.com', 'thaipbs.or.th', 'pptvhd36.com', 'ch7.com', 'thestandard.co', 'workpointtoday.com', 'amarintv.com', 'nationtv.tv', 'tnnthailand.com', 'springnews.co.th']
-        domain_pattern = "|".join([d.replace('.', r'\.') for d in whitelist])
-        regex = rf'https?://(?:www\.)?(?:[a-zA-Z0-9-]+\.)*(?:{domain_pattern})[^\s"\'<>\\]*'
-        found_links = re.findall(regex, decoded_html)
-        for link in found_links:
-            clean_link = link.split('?')[0] 
-            if len(clean_link.split('/')) >= 4 and not clean_link.endswith('/home'): return clean_link
+        
+        for link in valid_external_links:
+            if any(w in link.lower() for w in whitelist):
+                return link # คืนค่าลิงก์ที่เป็นเว็บหลักสำนักข่าว
+
+        # 3. ถ้าไม่มีใน Whitelist เลย ให้คืนค่าลิงก์อิสระอันแรกที่เจอ (Fallback)
+        return valid_external_links[0]
+        
+    except Exception: 
         return ""
-    except Exception: return ""
 
 def fetch_with_fallback(url: str) -> str:
-    """ฟังก์ชันดึงเว็บข่าวทั่วไป (ห้ามใช้ดึงลิงก์โซเชียลเด็ดขาด)"""
     anti_bot_patterns = r'(cloudflare|500 internal server error|403 forbidden|access denied|captcha|not acceptable|checking your browser|security check|just a moment)'
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36", 
@@ -231,7 +254,7 @@ def extract_text_from_url(url: str) -> dict:
         if is_social:
             content = extract_social_metadata(url)
             
-            # ค้นหาลิงก์ข่าวจริง (Thairath, Khaosod) ที่ซ่อนอยู่ในโพสต์
+            # ค้นหาลิงก์ข่าวจริง หรือลิงก์อิสระ ที่ซ่อนอยู่ในโพสต์
             hidden_news_url = force_extract_news_link(url)
             actual_news_content = ""
             
@@ -239,7 +262,6 @@ def extract_text_from_url(url: str) -> dict:
                 actual_primary_url = hidden_news_url
                 actual_news_content = fetch_with_fallback(hidden_news_url)
                 
-            # สร้างเนื้อหาสุดท้ายที่จะส่งให้ AI
             final_content = ""
             if "Error" not in content:
                 final_content += f"{content}\n\n"
@@ -248,10 +270,10 @@ def extract_text_from_url(url: str) -> dict:
                 
             final_content = final_content.strip()
             
-            # 🚨 ถ้าไม่มีเนื้อหาข่าวเลย (พังทั้งแคปชั่น พังทั้งลิงก์ซ่อน) ให้จบการทำงานตรงนี้เลย!
-            # ห้ามส่งลิงก์ Facebook ไปให้ fetch_with_fallback เด็ดขาด!
+            # 🚨 ถ้าไม่มีเนื้อหาข่าวเลย (โดนบล็อก Anti-Bot และไม่มีลิงก์ข่าวแนบมา) 
+            # ให้โชว์ Error นี้ เพื่อให้ UI แจ้งเตือนผู้ใช้อย่างถูกต้อง 
             if not final_content:
-                return {"error": "ไม่สามารถดึงข้อมูลเนื้อหาจากโพสต์นี้ได้ (เนื้อหาถูกปิดกั้นการเข้าถึง)"}
+                return {"error": "เว็บไซต์มีระบบป้องกันการดึงข้อมูลอัตโนมัติ (Anti-bot) หรือไม่พบเนื้อหาที่เป็นข้อความเพียงพอต่อการวิเคราะห์"}
                 
             if re.search(gambling_keywords, final_content, re.IGNORECASE): 
                 return {"error": "GAMBLING_DETECTED"}
@@ -259,7 +281,6 @@ def extract_text_from_url(url: str) -> dict:
             return {"content": final_content, "actual_url": actual_primary_url}
             
         else:
-            # ถ้าเป็นเว็บข่าวปกติ (ไม่ใช่ Facebook) ดึงข้อมูลได้ตามปกติ
             actual_news_content = fetch_with_fallback(url)
             if actual_news_content:
                 if re.search(gambling_keywords, actual_news_content, re.IGNORECASE): return {"error": "GAMBLING_DETECTED"}
