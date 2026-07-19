@@ -125,34 +125,36 @@ def extract_social_metadata(url: str) -> str:
         elif "facebook.com" in url or "fb.watch" in url:
             fb_text = ""
             
-            # 🚀 ท่าที่ 1: ดึงหน้า Embed (ช่องทางลับที่เฟซบุ๊กไม่ค่อยบล็อกเนื้อหา)
             try:
-                embed_url = f"https://www.facebook.com/plugins/post.php?href={quote(url)}"
-                res_embed = requests.get(embed_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-                res_embed.encoding = 'utf-8'
-                if res_embed.status_code == 200:
-                    soup_embed = BeautifulSoup(res_embed.text, 'html.parser')
-                    text_parts = [p.get_text(strip=True) for p in soup_embed.find_all(['p', 'span']) if len(p.get_text(strip=True)) > 20]
-                    if text_parts:
-                        temp = "\n".join(set(text_parts))
-                        if not re.search(r'(log in to facebook|เข้าสู่ระบบ|security check)', temp, re.IGNORECASE):
-                            fb_text = temp
+                req_headers = {"User-Agent": "facebookexternalhit/1.1", "Accept-Language": "th-TH,th;q=0.9"}
+                res_meta = requests.get(url, headers=req_headers, timeout=15, allow_redirects=True)
+                res_meta.encoding = 'utf-8'
+                soup = BeautifulSoup(res_meta.text, 'html.parser')
+                og_title = soup.find("meta", property="og:title") or soup.find("meta", attrs={"name": "og:title"})
+                og_desc = soup.find("meta", property="og:description") or soup.find("meta", attrs={"name": "og:description"})
+                temp = f"{og_title['content'] if og_title else ''}\n{og_desc['content'] if og_desc else ''}".strip()
+                if temp and not re.search(r'(log in to facebook|เข้าสู่ระบบ|security check|โซเชียลยูทิลิตี้|แอปพลิเคชัน messenger)', temp, re.IGNORECASE):
+                    fb_text = temp
             except Exception: pass
 
-            # 🚀 ท่าที่ 2: ใช้กุญแจผี Local (ดึง Meta Description)
-            if not fb_text or len(fb_text) < 40:
+            if not fb_text:
                 try:
-                    req_headers = {"User-Agent": "facebookexternalhit/1.1", "Accept-Language": "th-TH,th;q=0.9"}
-                    res_meta = requests.get(url, headers=req_headers, timeout=15, allow_redirects=True)
-                    res_meta.encoding = 'utf-8'
-                    soup = BeautifulSoup(res_meta.text, 'html.parser')
-                    og_title = soup.find("meta", property="og:title") or soup.find("meta", attrs={"name": "og:title"})
-                    og_desc = soup.find("meta", property="og:description") or soup.find("meta", attrs={"name": "og:description"})
-                    temp = f"{og_title['content'] if og_title else ''}\n{og_desc['content'] if og_desc else ''}".strip()
-                    if temp and not re.search(r'(log in to facebook|เข้าสู่ระบบ|security check)', temp, re.IGNORECASE):
-                        fb_text = temp
+                    res_jina = requests.get(f"https://r.jina.ai/{quote(url)}", headers={"X-Retain-Images": "none"}, timeout=15)
+                    if res_jina.status_code == 200:
+                        temp = res_jina.text[:2000] 
+                        if temp and not re.search(r'(log in to facebook|เข้าสู่ระบบ|security check|แอปพลิเคชัน messenger)', temp, re.IGNORECASE):
+                            fb_text = temp
                 except Exception: pass
-            
+
+            if not fb_text:
+                try:
+                    res_ml = requests.get(f"https://api.microlink.io/?url={quote(url)}", timeout=12)
+                    if res_ml.status_code == 200:
+                        data = res_ml.json().get("data", {})
+                        temp = f"{data.get('title', '')}\n{data.get('description', '')}".strip()
+                        if temp and not re.search(r'(log in|เข้าสู่ระบบ|messenger)', temp, re.IGNORECASE): fb_text = temp
+                except Exception: pass
+                
             fb_text = decode_thai_text(fb_text)
             fb_text = html.unescape(fb_text)
             fb_text = re.sub(r'<[^>]+>', ' ', fb_text) 
@@ -160,13 +162,22 @@ def extract_social_metadata(url: str) -> str:
             fb_text = re.sub(r'function\s*\(.*?\)\s*\{.*?\}', '', fb_text) 
             fb_text = re.sub(r'\s+', ' ', fb_text).strip()
             
-            # ยางลบอัจฉริยะ ลบขยะ UI ทิ้งให้เหี้ยน!
-            ui_patterns = r'(ดูโพสต์เพิ่มเติมจาก|ดูเพิ่มเติมจาก|See more of|บน Facebook|on Facebook|ไม่ใช่ตอนนี้|Not Now|วิดีโอที่เกี่ยวข้อง|Related videos|แนะนำสำหรับคุณ|Suggested for you|Facebook กำลังแสดงข้อมูล|หาเพื่อนบน Facebook|เข้าสู่ระบบ|Log In|สมัครใช้งาน|Create New Account|ลืมรหัสผ่าน|โซเชียลยูทิลิตี้)'
+            # 🚨 [เพิ่ม Blacklist] บล็อกคำโปรโมทแอป Messenger ที่ Cloud ชอบโดนยัดเยียด
+            garbage_patterns = r'(log in to facebook|เข้าสู่ระบบ|error 404|page not found|ไม่พบหน้านี้|สมัครใช้งาน|create new account|forgotten password|security check|สร้างบัญชีหรือเข้าสู่ระบบ|เชื่อมต่อกับเพื่อน|แชร์รูปภาพและวิดีโอ|ส่งข้อความและรับการอัปเดต|connect with friends|share photos and videos|send messages and get updates|เข้าสู่ระบบ facebook เพื่อเริ่มแชร์|to start sharing and connecting|หาเพื่อนบน facebook|find your friends|โซเชียลยูทิลิตี้|social utility|แอปพลิเคชัน messenger|แอป messenger|ดาวน์โหลด messenger|download messenger|ฟีเจอร์แอปพลิเคชัน|ไปที่ messenger|go to messenger|ส่งข้อความถึง|join the conversation)'
+            
+            # 🚨 เช็คแบบตรงตัว ถ้าดึงมาแล้วได้คำพวกนี้เดี่ยวๆ ให้เตะทิ้ง
+            if fb_text.lower().strip() in ['messenger', 'facebook', 'facebook messenger']:
+                return "Error: โดนบล็อกด้วยหน้าเพจระบบ (Messenger/Facebook Wall)"
+            
+            if not fb_text or re.search(garbage_patterns, fb_text, re.IGNORECASE):
+                return "Error: Facebook บล็อกแคปชั่น (ติดหน้า Login / Messenger Promo)"
+                
+            # ยางลบ ลบคำที่เป็นปุ่มกด UI ทิ้ง
+            ui_patterns = r'(ดูโพสต์เพิ่มเติมจาก|ดูเพิ่มเติมจาก|See more of|บน Facebook|on Facebook|ไม่ใช่ตอนนี้|Not Now|วิดีโอที่เกี่ยวข้อง|Related videos|แนะนำสำหรับคุณ|Suggested for you|Facebook กำลังแสดงข้อมูล|หาเพื่อนบน Facebook|เข้าสู่ระบบ|Log In|สมัครใช้งาน|Create New Account|ลืมรหัสผ่าน|โซเชียลยูทิลิตี้|เปิดใน Messenger|Open in Messenger|ใช้ Messenger)'
             cleaned_fb_text = re.sub(ui_patterns, '', fb_text, flags=re.IGNORECASE).strip()
             
-            # 🚨 กฎเหล็ก 40 ตัวอักษร: ถ้าลบขยะแล้วเหลือความยาวไม่ถึง 40 ตัวอักษร ให้ถือว่าไม่ใช่ข่าว! เตะทิ้งทันที!
             if len(cleaned_fb_text) < 40:
-                return "Error: ดึงได้เพียงข้อความระบบ (ไม่มีเนื้อหาข่าวเพียงพอ)"
+                return "Error: ดึงมาได้เพียงข้อความระบบ (ไม่มีเนื้อหาแคปชั่นข่าวที่ยาวพอ)"
                 
             return f"โพสต์จาก Facebook:\n{cleaned_fb_text}"
 
@@ -183,7 +194,6 @@ def extract_social_metadata(url: str) -> str:
         return f"Error: การสกัดข้อมูล Social Media ล้มเหลว - {str(e)}"
 
 def force_extract_news_link(social_url: str) -> str:
-    """ทะลวงหาลิงก์ข่าวจริง โดยรองรับการถอดรหัส l.php ของเฟซบุ๊ก"""
     if "x.com" in social_url.lower() or "twitter.com" in social_url.lower(): return ""
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     if "facebook.com" in social_url.lower() or "fb.watch" in social_url.lower():
@@ -195,14 +205,11 @@ def force_extract_news_link(social_url: str) -> str:
         decoded_html = unquote(response.text).replace('\\/', '/')
         
         valid_external_links = []
-        
-        # 🚀 [เครื่องมือใหม่] แกะรอยลิงก์ซ่อนของ Facebook โดยเฉพาะ (l.facebook.com/l.php?u=...)
         l_php_links = re.findall(r'l\.facebook\.com/l\.php\?u=([^&"\'<>\\]+)', response.text)
         for link in l_php_links:
             clean_l = unquote(link).split('?')[0]
             valid_external_links.append(clean_l)
             
-        # กวาดลิงก์ทั่วไปทั้งหมดในหน้าเว็บ
         general_url_pattern = r'https?://[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:/[^\s"\'<>\\]*)?'
         all_links = re.findall(general_url_pattern, decoded_html)
         
@@ -306,11 +313,8 @@ def extract_text_from_url(url: str) -> dict:
                 actual_news_content = fetch_with_fallback(hidden_news_url)
                 
             final_content = ""
-            
-            # 🚨 บังคับความซื่อตรง: ถ้าแคปชั่นไม่มีคำว่า Error และยาวพอ ถึงจะเอามารวมส่งให้ AI
             if "Error" not in content:
                 clean_social = content.replace("โพสต์จาก Facebook:", "").strip()
-                # กฎเหล็ก: แคปชั่นต้องยาวเกิน 40 ตัวอักษร ถ้าไม่ถึง แปลว่าเป็นขยะระบบ!
                 if len(clean_social) > 40:
                     final_content += f"{content}\n\n"
                     
@@ -321,7 +325,7 @@ def extract_text_from_url(url: str) -> dict:
             
             # 🚨 ถ้าระบบหาแคปชั่นยาวๆ ไม่เจอ และหาเว็บข่าวซ่อนก็ไม่เจอ ให้เด้ง Error ขึ้นหน้าเว็บเลย ห้ามส่งให้ AI ตรวจ!
             if not final_content:
-                return {"error": "ไม่พบเนื้อหาข่าวในลิงก์นี้ (อาจเป็นลิงก์วิดีโอ, โพสต์ปิดกั้น, หรือระบบป้องกันของ Facebook)"}
+                return {"error": "ไม่พบเนื้อหาข่าวในลิงก์นี้ (เซิร์ฟเวอร์โดนปิดกั้น หรือเป็นลิงก์โพสต์วิดีโอ)"}
                 
             if re.search(gambling_keywords, final_content, re.IGNORECASE): 
                 return {"error": "GAMBLING_DETECTED"}
