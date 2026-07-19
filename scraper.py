@@ -1,13 +1,13 @@
 import re
 import requests
 import html
+import codecs
 from bs4 import BeautifulSoup
 from urllib.parse import unquote, quote
 
 def clean_mobile_url(url: str) -> str:
     url = unquote(url.strip())
-    if url.endswith('#'):
-        url = url[:-1]
+    if url.endswith('#'): url = url[:-1]
     if "l.facebook.com/l.php?u=" in url:
         try: url = unquote(url.split("u=")[1].split("&")[0])
         except Exception: pass
@@ -30,15 +30,22 @@ def clean_mobile_url(url: str) -> str:
         else: url = f"{base_url}{fragment}"
     return url
 
+def decode_thai_text(text: str) -> str:
+    if not text: return ""
+    if r'\u' in text:
+        try: text = re.sub(r'\\u[0-9a-fA-F]{4}', lambda m: codecs.decode(m.group(), 'unicode_escape'), text)
+        except Exception: pass
+    if 'à¸' in text or 'à¹' in text:
+        try: text = text.encode('latin1').decode('utf-8')
+        except Exception: pass
+    return text
+
 def resolve_facebook_redirects(url: str) -> str:
-    if "facebook.com/share/" not in url.lower() and "fb.watch" not in url.lower():
-        return url
+    if "facebook.com/share/" not in url.lower() and "fb.watch" not in url.lower(): return url
     try:
-        bot_headers = {
-            "User-Agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
-            "Accept-Language": "th-TH,th;q=0.9,en-US;q=0.8,en;q=0.7"
-        }
+        bot_headers = {"User-Agent": "facebookexternalhit/1.1", "Accept-Language": "th-TH,th;q=0.9"}
         res = requests.get(url, headers=bot_headers, timeout=10, allow_redirects=False)
+        res.encoding = 'utf-8'
         loc = ""
         if res.status_code in [301, 302, 303, 307, 308]: loc = res.headers.get('Location', '')
         elif res.status_code == 200:
@@ -50,18 +57,15 @@ def resolve_facebook_redirects(url: str) -> str:
             if loc.startswith('/'): loc = "https://www.facebook.com" + loc
             if "next=" in loc.lower():
                 real_url = unquote(loc.split("next=")[1].split("&")[0])
-                if "facebook.com/share/" not in real_url.lower() and "login" not in real_url.lower():
-                    return real_url
-            elif "facebook.com/share/" not in loc.lower() and "login" not in loc.lower():
-                return loc
+                if "facebook.com/share/" not in real_url.lower() and "login" not in real_url.lower(): return real_url
+            elif "facebook.com/share/" not in loc.lower() and "login" not in loc.lower(): return loc
     except Exception: pass
 
     try:
         proxy_url = f"https://api.allorigins.win/get?url={quote(url)}"
         res_proxy = requests.get(proxy_url, timeout=15)
         if res_proxy.status_code == 200:
-            data = res_proxy.json()
-            final_url = data.get("status", {}).get("url", url)
+            final_url = res_proxy.json().get("status", {}).get("url", url)
             if "facebook.com/share/" not in final_url.lower() and "login" not in final_url.lower(): return final_url
             if "next=" in final_url.lower():
                 real_url = unquote(final_url.split("next=")[1].split("&")[0])
@@ -73,8 +77,9 @@ def expand_url(url: str) -> str:
     redirectors = ['shorturl.', 'bit.ly', 'tinyurl.', 't.co', 'cutt.ly', 'rebrand.ly', 'lnkd.in', 'vt.tiktok.com', 'vm.tiktok.com', 'youtu.be', 'line.me', 'liff.line.me']
     if any(r in url.lower() for r in redirectors):
         try:
-            headers = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"}
+            headers = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)"}
             res = requests.get(url, headers=headers, allow_redirects=True, timeout=12)
+            res.encoding = 'utf-8'
             final_url = res.url
             meta_match = re.search(r'http-equiv=["\']?refresh["\']?[^>]*url=["\']?([^"\'>]+)["\']?', res.text, re.IGNORECASE)
             if meta_match: final_url = meta_match.group(1)
@@ -85,28 +90,27 @@ def expand_url(url: str) -> str:
     return url
 
 def extract_social_metadata(url: str) -> str:
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)"}
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     try:
         if "x.com/" in url or "twitter.com/" in url:
             match = re.search(r'(?:x|twitter)\.com(/.*)', url)
             if match:
                 clean_path = match.group(1).split('?')[0] 
-                api_url = "https://api.vxtwitter.com" + clean_path
-                res = requests.get(api_url, timeout=10)
+                res = requests.get("https://api.vxtwitter.com" + clean_path, timeout=10)
                 if res.status_code == 200:
                     data = res.json()
                     return f"{data.get('user_name', 'ผู้ใช้งาน X')}\n{data.get('text', '')}".strip()
-                return f"Error: API ของ X ปฏิเสธการดึงข้อมูล"
+                return "Error: API ของ X ปฏิเสธการดึงข้อมูล"
 
         elif "instagram.com/" in url:
             match = re.search(r'instagram\.com/(?:p|reel|tv)/([^/?]+)', url)
             if match:
                 shortcode = match.group(1)
-                embed_url = f"https://www.instagram.com/p/{shortcode}/embed/captioned/"
                 try:
-                    res = requests.get(embed_url, headers=headers, timeout=12)
+                    res = requests.get(f"https://www.instagram.com/p/{shortcode}/embed/captioned/", headers=headers, timeout=12)
                     if res.status_code == 200:
-                        soup = BeautifulSoup(res.content, 'html.parser')
+                        res.encoding = 'utf-8'
+                        soup = BeautifulSoup(res.text, 'html.parser')
                         caption_div = soup.find(class_='Caption')
                         if caption_div:
                             user_tag = caption_div.find(class_='CaptionUsername')
@@ -118,113 +122,137 @@ def extract_social_metadata(url: str) -> str:
                 except Exception: pass
             return "Error: ไม่สามารถทะลวงระบบความปลอดภัยของ Instagram ได้ในขณะนี้"
 
-        # 🚀 [อัปเกรดล่าสุด] แกะรหัสภาษาต่างดาวและขยะ Unicode จาก Facebook
         elif "facebook.com" in url or "fb.watch" in url:
+            fb_text = ""
+            
+            # 🚀 ท่าที่ 1: Local Request เป็นทัพหน้าสุด (เพื่อให้รันบนเครื่อง Local ผ่าน 100% เหมือนแต่ก่อน)
             try:
-                req_headers = {
-                    "User-Agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
-                    "Accept-Language": "th-TH,th;q=0.9,en-US;q=0.8,en;q=0.7"
-                }
+                req_headers = {"User-Agent": "facebookexternalhit/1.1", "Accept-Language": "th-TH,th;q=0.9"}
                 res_meta = requests.get(url, headers=req_headers, timeout=15, allow_redirects=True)
-                
-                # 🚨 บังคับใช้ UTF-8 100% ห้ามให้ระบบเดาเอง (แก้ปัญหาภาษาต่างดาว)
                 res_meta.encoding = 'utf-8'
+                soup = BeautifulSoup(res_meta.text, 'html.parser')
+                og_title = soup.find("meta", property="og:title") or soup.find("meta", attrs={"name": "og:title"})
+                og_desc = soup.find("meta", property="og:description") or soup.find("meta", attrs={"name": "og:description"})
+                temp = f"{og_title['content'] if og_title else ''}\n{og_desc['content'] if og_desc else ''}".strip()
+                if temp and not re.search(r'(log in to facebook|เข้าสู่ระบบ|security check|โซเชียลยูทิลิตี้)', temp, re.IGNORECASE):
+                    fb_text = temp
+            except Exception: pass
+
+            # 🚀 ท่าที่ 2: Jina AI (จะทำงานก็ต่อเมื่อ Local โดนบล็อก เช่น บน Streamlit Cloud)
+            if not fb_text:
+                try:
+                    res_jina = requests.get(f"https://r.jina.ai/{quote(url)}", headers={"X-Retain-Images": "none"}, timeout=15)
+                    if res_jina.status_code == 200:
+                        temp = res_jina.text[:2000] 
+                        if temp and not re.search(r'(log in to facebook|เข้าสู่ระบบ|security check)', temp, re.IGNORECASE):
+                            fb_text = temp
+                except Exception: pass
+
+            # 🚀 ท่าที่ 3: Microlink API (ตัวช่วยบน Cloud)
+            if not fb_text:
+                try:
+                    res_ml = requests.get(f"https://api.microlink.io/?url={quote(url)}", timeout=12)
+                    if res_ml.status_code == 200:
+                        data = res_ml.json().get("data", {})
+                        temp = f"{data.get('title', '')}\n{data.get('description', '')}".strip()
+                        if temp and not re.search(r'(log in|เข้าสู่ระบบ)', temp, re.IGNORECASE): fb_text = temp
+                except Exception: pass
                 
-                # ใช้ res.content เพื่อป้องกันการถอดรหัสผิดพลาด
-                soup_meta = BeautifulSoup(res_meta.content, 'html.parser', from_encoding='utf-8')
+            fb_text = decode_thai_text(fb_text)
+            fb_text = html.unescape(fb_text)
+            fb_text = re.sub(r'<[^>]+>', ' ', fb_text) 
+            fb_text = re.sub(r'\{.*?\}', '', fb_text) 
+            fb_text = re.sub(r'function\s*\(.*?\)\s*\{.*?\}', '', fb_text) 
+            fb_text = re.sub(r'\s+', ' ', fb_text).strip()
+            
+            # 🚨 บล็อกโฆษณา Facebook และหน้า Login
+            garbage_patterns = r'(log in to facebook|เข้าสู่ระบบ|error 404|page not found|ไม่พบหน้านี้|สมัครใช้งาน|create new account|forgotten password|security check|สร้างบัญชีหรือเข้าสู่ระบบ|เชื่อมต่อกับเพื่อน|แชร์รูปภาพและวิดีโอ|ส่งข้อความและรับการอัปเดต|connect with friends|share photos and videos|send messages and get updates|เข้าสู่ระบบ facebook เพื่อเริ่มแชร์|to start sharing and connecting|หาเพื่อนบน facebook|find your friends|โซเชียลยูทิลิตี้|social utility)'
+            
+            if not fb_text or re.search(garbage_patterns, fb_text, re.IGNORECASE):
+                return "Error: Facebook บล็อกแคปชั่น (ติด Login Wall)"
                 
-                og_title = soup_meta.find("meta", property="og:title") or soup_meta.find("meta", attrs={"name": "og:title"})
-                og_desc = soup_meta.find("meta", property="og:description") or soup_meta.find("meta", attrs={"name": "og:description"})
+            # ยางลบ ลบคำที่เป็นปุ่มกด UI ทิ้ง
+            ui_patterns = r'(ดูโพสต์เพิ่มเติมจาก|ดูเพิ่มเติมจาก|See more of|บน Facebook|on Facebook|ไม่ใช่ตอนนี้|Not Now|วิดีโอที่เกี่ยวข้อง|Related videos|แนะนำสำหรับคุณ|Suggested for you|Facebook กำลังแสดงข้อมูล|หาเพื่อนบน Facebook)'
+            cleaned_fb_text = re.sub(ui_patterns, '', fb_text, flags=re.IGNORECASE).strip()
+            
+            # 🚨 [อุดรอยรั่ว AI 100%] ถ้าลบแล้วเนื้อหาสั้นเกินไป ให้เตะทิ้งทันที ห้ามส่งหัวข้อเปล่าๆไปเด็ดขาด!
+            if len(cleaned_fb_text) < 15:
+                return "Error: ดึงมาได้เพียงข้อความระบบ ไม่มีเนื้อหาแคปชั่นข่าว"
                 
-                title = og_title["content"] if og_title else ""
-                desc = og_desc["content"] if og_desc else ""
-                
-                # 🚨 แก้ปัญหาโค้ด \u0e01 ที่เฟซบุ๊กชอบเข้ารหัสซ่อนไว้
-                if r'\u' in title:
-                    try: title = title.encode('utf-8').decode('unicode_escape')
-                    except: pass
-                if r'\u' in desc:
-                    try: desc = desc.encode('utf-8').decode('unicode_escape')
-                    except: pass
-                
-                fb_text = f"{title}\n{desc}".strip()
-                
-                # 🚨 ล้าง HTML Tags และโค้ด JSON/JS ที่ตกหล่น
-                fb_text = html.unescape(fb_text)
-                fb_text = re.sub(r'<[^>]+>', ' ', fb_text)
-                fb_text = re.sub(r'\{.*?\}', '', fb_text)
-                fb_text = re.sub(r'function\s*\(.*?\)\s*\{.*?\}', '', fb_text)
-                fb_text = re.sub(r'\s+', ' ', fb_text).strip()
-                
-                # 🚨 ตัวสแกน "ภาษาคน": นับจำนวนอักษรไทย-อังกฤษ ถ้าน้อยไปแปลว่าเป็นโค้ดขยะ
-                letters = re.findall(r'[ก-๙a-zA-Z]', fb_text)
-                
-                garbage_patterns = r'(log in to facebook|เข้าสู่ระบบ|error 404|page not found|ไม่พบหน้านี้|สมัครใช้งาน|create new account|forgotten password|security check)'
-                if not fb_text or re.search(garbage_patterns, fb_text, re.IGNORECASE):
-                    return "Error: Facebook บล็อกแคปชั่น (ติด Login Wall)"
-                elif len(fb_text) < 20 and "facebook" in fb_text.lower():
-                    return "Error: ดึงมาได้เพียงชื่อเพจ ไม่มีเนื้อหาข่าว"
-                elif len(letters) < 15:
-                    # ถ้าเจอแต่สัญลักษณ์แปลกๆ ให้คืนค่า Error เพื่อบังคับระบบหลักไปดึงลิงก์ข่าวอิสระแทน
-                    return "Error: ข้อมูลที่ดึงมาเป็นขยะรหัส (Unreadable Text)"
-                    
-                return f"โพสต์จาก Facebook:\n{fb_text}"
-            except Exception:
-                return "Error: ขัดข้องระหว่างดึงแคปชั่น"
+            return f"โพสต์จาก Facebook:\n{cleaned_fb_text}"
 
         response = requests.get(url, headers=headers, timeout=15)
-        soup = BeautifulSoup(response.content, 'html.parser')
+        response.encoding = 'utf-8'
+        soup = BeautifulSoup(response.text, 'html.parser')
         og_title = soup.find("meta", property="og:title") or soup.find("meta", attrs={"name": "og:title"})
         og_desc = soup.find("meta", property="og:description") or soup.find("meta", attrs={"name": "og:description"})
         title = og_title["content"] if og_title else (soup.title.string if soup.title else "")
         desc = og_desc["content"] if og_desc else ""
-        return f"{title}\n{desc}".strip()
+        return f"{decode_thai_text(title)}\n{decode_thai_text(desc)}".strip()
         
     except Exception as e:
         return f"Error: การสกัดข้อมูล Social Media ล้มเหลว - {str(e)}"
 
 def force_extract_news_link(social_url: str) -> str:
-    """ทะลวงหาลิงก์ข่าวจริง โดยอิงตาม Whitelist ก่อน ถ้าไม่เจอให้ดึงลิงก์บล็อกอิสระที่ซ่อนอยู่"""
     if "x.com" in social_url.lower() or "twitter.com" in social_url.lower(): return ""
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)"}
-    if "facebook.com" in social_url.lower() or "fb.watch" in social_url.lower():
-        headers = {"User-Agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"}
-        
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    
     try:
-        response = requests.get(social_url, headers=headers, timeout=15, allow_redirects=True)
-        decoded_html = unquote(response.text).replace('\\/', '/') 
+        decoded_html = ""
+        if "facebook.com" in social_url.lower() or "fb.watch" in social_url.lower():
+            try:
+                res = requests.get(f"https://r.jina.ai/{quote(social_url)}", headers={"X-Retain-Images": "none"}, timeout=15)
+                decoded_html = res.text
+            except Exception: pass
+            
+            if not decoded_html or "log in" in decoded_html.lower():
+                try:
+                    res = requests.get(f"https://api.allorigins.win/get?url={quote(social_url)}", timeout=15)
+                    decoded_html = res.json().get("contents", "")
+                except Exception: pass
+            
+        if not decoded_html:
+            response = requests.get(social_url, headers=headers, timeout=15, allow_redirects=True)
+            response.encoding = 'utf-8'
+            decoded_html = response.text
+            
+        decoded_html = decode_thai_text(unquote(decoded_html).replace('\\/', '/'))
         
         general_url_pattern = r'https?://[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:/[^\s"\'<>\\]*)?'
         all_links = re.findall(general_url_pattern, decoded_html)
         
         valid_external_links = []
-        exclude_domains = ['facebook.com', 'fb.com', 'fb.watch', 'messenger.com', 'instagram.com', 'whatsapp.com', 'x.com', 'twitter.com', 'tiktok.com', 'line.me', 'liff.line.me']
+        
+        exclude_domains = [
+            'facebook.com', 'fb.com', 'fb.watch', 'messenger.com', 'instagram.com', 'whatsapp.com', 
+            'x.com', 'twitter.com', 'tiktok.com', 'line.me', 'liff.line.me', 'fbcdn.net', 'akamaihd.net', 
+            'google-analytics.com', 'googletagmanager.com', 'doubleclick.net', 'youtube.com', 'youtu.be',
+            'w3.org', 'schema.org', 'ogp.me', 'purl.org', 'play.google.com', 'apps.apple.com', 'googleapis.com'
+        ]
+        exclude_exts = ('.js', '.css', '.json', '.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.ico', '.woff', '.woff2', '.ttf', '.mp4', '.mp3')
         
         for link in all_links:
             clean_link = link.split('?')[0] 
-            if any(domain in clean_link.lower() for domain in exclude_domains):
-                continue
+            if any(domain in clean_link.lower() for domain in exclude_domains): continue
+            if clean_link.lower().endswith(exclude_exts): continue 
             if len(clean_link.split('/')) >= 4 and not clean_link.endswith('/home'):
                 valid_external_links.append(clean_link)
                 
-        if not valid_external_links:
-            return ""
+        if not valid_external_links: return ""
 
         whitelist = ['thairath.co.th', 'khaosod.co.th', 'matichon.co.th', 'dailynews.co.th', 'sanook.com', 'prachachat.net', 'bangkokbiznews.com', 'mgronline.com', 'thaipbs.or.th', 'pptvhd36.com', 'ch7.com', 'thestandard.co', 'workpointtoday.com', 'amarintv.com', 'nationtv.tv', 'tnnthailand.com', 'springnews.co.th']
         
         for link in valid_external_links:
-            if any(w in link.lower() for w in whitelist):
-                return link 
+            if any(w in link.lower() for w in whitelist): return link 
 
         return valid_external_links[0]
         
-    except Exception: 
-        return ""
+    except Exception: return ""
 
 def fetch_with_fallback(url: str) -> str:
     anti_bot_patterns = r'(cloudflare|500 internal server error|403 forbidden|access denied|captcha|not acceptable|checking your browser|security check|just a moment)'
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36", 
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", 
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "th-TH,th;q=0.9,en-US;q=0.8,en;q=0.7",
         "Referer": "https://www.google.com/"
@@ -232,20 +260,29 @@ def fetch_with_fallback(url: str) -> str:
     
     try:
         res = requests.get(url, headers=headers, timeout=15, allow_redirects=True)
+        content_type = res.headers.get('Content-Type', '').lower()
+        if 'javascript' in content_type or 'css' in content_type or 'json' in content_type or 'image' in content_type or 'xml' in content_type:
+            return ""
+            
         if res.status_code == 200:
-            # 🚨 เปลี่ยนมาใช้ res.content แก้ปัญหาหน้าเว็บอ่านข่าวแสดงภาษาเพี้ยน
-            soup = BeautifulSoup(res.content, 'html.parser')
+            res.encoding = 'utf-8'
+            soup = BeautifulSoup(res.text, 'html.parser')
             for element in soup(["script", "style", "nav", "header", "footer", "aside", "noscript"]): element.extract()
             clean_text = re.sub(r'\s+', ' ', soup.get_text(separator=' ', strip=True)).strip()
+            clean_text = decode_thai_text(clean_text)
+            
+            if clean_text.count('{') > 5 and clean_text.count('}') > 5 and 'function' in clean_text:
+                return ""
+                
             if len(clean_text) > 100 and not re.search(anti_bot_patterns, clean_text, re.IGNORECASE):
                 return clean_text
     except Exception: pass
 
     try:
-        jina_url = f"https://r.jina.ai/{url}"
-        response = requests.get(jina_url, headers={"Accept": "text/plain", "X-Retain-Images": "none"}, timeout=20)
+        response = requests.get(f"https://r.jina.ai/{url}", headers={"Accept": "text/plain", "X-Retain-Images": "none"}, timeout=20)
         if response.status_code == 200:
-            content = response.text
+            response.encoding = 'utf-8'
+            content = decode_thai_text(response.text)
             if content.strip().startswith('{') and content.strip().endswith('}'): return ""
             if len(content.strip()) > 100 and not re.search(anti_bot_patterns, content, re.IGNORECASE): 
                 return content
@@ -286,8 +323,13 @@ def extract_text_from_url(url: str) -> dict:
                 actual_news_content = fetch_with_fallback(hidden_news_url)
                 
             final_content = ""
+            
+            # 🚨 บล็อกการส่งคำว่า "โพสต์จาก Facebook:\n" เปล่าๆ ไปให้ AI
             if "Error" not in content:
-                final_content += f"{content}\n\n"
+                clean_social = content.replace("โพสต์จาก Facebook:", "").strip()
+                if len(clean_social) > 5:
+                    final_content += f"{content}\n\n"
+                    
             if actual_news_content:
                 final_content += f"[เนื้อหาข่าวจริงที่ซ่อนอยู่ ({actual_primary_url})]:\n{actual_news_content}"
                 
