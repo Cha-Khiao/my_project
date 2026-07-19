@@ -4,7 +4,6 @@ from bs4 import BeautifulSoup
 from urllib.parse import unquote, quote
 
 def clean_mobile_url(url: str) -> str:
-    """เคลียร์ Tracking และปรับมาตรฐานการเข้ารหัสของลิงก์จากมือถือ"""
     url = unquote(url.strip())
     
     if url.endswith('#'):
@@ -41,12 +40,10 @@ def clean_mobile_url(url: str) -> str:
     return url
 
 def resolve_facebook_redirects(url: str) -> str:
-    """ทะลวงลิงก์ Facebook Share ข้ามการบล็อก IP บน Cloud ด้วยกุญแจผี"""
     if "facebook.com/share/" not in url.lower() and "fb.watch" not in url.lower():
         return url
         
     try:
-        # 🚀 ท่าที่ 1: ใช้กุญแจผี WhatsApp ข้าม WAF ของ Cloud แบบไม่ตาม Redirect เพื่อดักจับเป้าหมาย
         bot_headers = {
             "User-Agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
             "Accept-Language": "th-TH,th;q=0.9,en-US;q=0.8,en;q=0.7"
@@ -77,7 +74,6 @@ def resolve_facebook_redirects(url: str) -> str:
     except Exception:
         pass
 
-    # 🚀 ท่าที่ 2: สำรองด้วย Proxy เผื่อเจอกรณีแปลกๆ
     try:
         proxy_url = f"https://api.allorigins.win/get?url={quote(url)}"
         res_proxy = requests.get(proxy_url, timeout=15)
@@ -98,8 +94,6 @@ def resolve_facebook_redirects(url: str) -> str:
     return url
 
 def expand_url(url: str) -> str:
-    """แกะลิงก์ย่อต่างๆ ให้เป็นลิงก์เต็ม"""
-    # 🚨 ลบ Facebook และ /share/ ออกจากตรงนี้ เพื่อไม่ให้ Cloud โดนแบนเวลาใช้ UA ของ iPhone
     redirectors = ['shorturl.', 'bit.ly', 'tinyurl.', 't.co', 'cutt.ly', 'rebrand.ly', 'lnkd.in', 'vt.tiktok.com', 'vm.tiktok.com', 'youtu.be', 'line.me', 'liff.line.me']
     
     if any(r in url.lower() for r in redirectors):
@@ -125,7 +119,6 @@ def expand_url(url: str) -> str:
 def extract_social_metadata(url: str) -> str:
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)"}
     try:
-        # ================= 1. Twitter (X) =================
         if "x.com/" in url or "twitter.com/" in url:
             match = re.search(r'(?:x|twitter)\.com(/.*)', url)
             if match:
@@ -140,7 +133,6 @@ def extract_social_metadata(url: str) -> str:
                 else:
                     return f"Error: API ของ X ปฏิเสธการดึงข้อมูล ({res.status_code})"
 
-        # ================= 2. Instagram =================
         elif "instagram.com/" in url:
             match = re.search(r'instagram\.com/(?:p|reel|tv)/([^/?]+)', url)
             if match:
@@ -181,46 +173,59 @@ def extract_social_metadata(url: str) -> str:
                 pass
             return "Error: ไม่สามารถทะลวงระบบความปลอดภัยของ Instagram ได้ในขณะนี้"
 
-        # ================= 3. Facebook =================
+        # 🚀 [อัปเกรด]: จัดการ Facebook บน Cloud ให้สมบูรณ์แบบ
         elif "facebook.com" in url or "fb.watch" in url:
             fb_text = ""
             
+            # ท่าที่ 1: ใช้ Jina AI ทะลวง Cloud IP เป็นทัพหน้า (มันเก่งในการข้าม Error 404 ของเฟซบุ๊กมาก)
             try:
-                safe_url = quote(url, safe=":/%?=&-_.#")
-                embed_url = f"https://www.facebook.com/plugins/post.php?href={safe_url}"
-                res_fb = requests.get(embed_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-                if res_fb.status_code == 200:
-                    soup_fb = BeautifulSoup(res_fb.text, 'html.parser')
-                    text_parts = [p.get_text(strip=True) for p in soup_fb.find_all(['p', 'span']) if len(p.get_text(strip=True)) > 20]
-                    if text_parts:
-                        ext_text = "\n".join(set(text_parts))
-                        if not re.search(r'(เข้าสู่ระบบ|Log In|Log in to Facebook)', ext_text, re.IGNORECASE):
-                            fb_text = ext_text
+                jina_url = f"https://r.jina.ai/{quote(url, safe=':/%?=&-_.#')}"
+                j_res = requests.get(jina_url, headers={"X-Retain-Images": "none"}, timeout=15)
+                if j_res.status_code == 200 and len(j_res.text) > 50:
+                    # 🚨 ดักจับคำว่า Error 404 ไม่ให้หลุดไปเด็ดขาด
+                    if not re.search(r'(log in to facebook|เข้าสู่ระบบ|error 404|page not found|ไม่พบหน้านี้|content not found)', j_res.text, re.IGNORECASE):
+                        fb_text = j_res.text[:2500] 
             except Exception:
                 pass
+
+            # ท่าที่ 2: ถ้า Jina ไม่ได้ ค่อยใช้ Embed API
+            if not fb_text:
+                try:
+                    safe_url = quote(url, safe=":/%?=&-_.#")
+                    embed_url = f"https://www.facebook.com/plugins/post.php?href={safe_url}"
+                    res_fb = requests.get(embed_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+                    if res_fb.status_code == 200:
+                        soup_fb = BeautifulSoup(res_fb.text, 'html.parser')
+                        text_parts = [p.get_text(strip=True) for p in soup_fb.find_all(['p', 'span']) if len(p.get_text(strip=True)) > 20]
+                        if text_parts:
+                            ext_text = "\n".join(set(text_parts))
+                            if not re.search(r'(เข้าสู่ระบบ|Log In|error 404|page not found)', ext_text, re.IGNORECASE):
+                                fb_text = ext_text
+                except Exception:
+                    pass
+                    
+            # ท่าที่ 3: ถ้า Embed ไม่ได้ ให้ใช้ Meta Tags
+            if not fb_text:
+                req_headers = {"User-Agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"}
+                res_meta = requests.get(url, headers=req_headers, timeout=15, allow_redirects=True)
+                res_meta.encoding = 'utf-8'
+                soup_meta = BeautifulSoup(res_meta.text, 'html.parser')
                 
-            req_headers = {"User-Agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"}
-            res_meta = requests.get(url, headers=req_headers, timeout=15, allow_redirects=True)
-            res_meta.encoding = 'utf-8'
-            soup_meta = BeautifulSoup(res_meta.text, 'html.parser')
-            
-            og_title = soup_meta.find("meta", property="og:title") or soup_meta.find("meta", attrs={"name": "og:title"})
-            og_desc = soup_meta.find("meta", property="og:description") or soup_meta.find("meta", attrs={"name": "og:description"})
-            
-            title = og_title["content"] if og_title else ""
-            desc = og_desc["content"] if og_desc else ""
-            meta_text = f"{title}\n{desc}".strip()
-            
-            final_fb_content = f"{meta_text}\n\n{fb_text}".strip()
-            
-            if not final_fb_content or re.search(r'(log in to facebook|เข้าสู่ระบบ)', final_fb_content, re.IGNORECASE):
-                return "Error: Facebook บล็อกด้วยหน้า Login Wall"
-            elif len(final_fb_content) < 60: 
+                og_title = soup_meta.find("meta", property="og:title") or soup_meta.find("meta", attrs={"name": "og:title"})
+                og_desc = soup_meta.find("meta", property="og:description") or soup_meta.find("meta", attrs={"name": "og:description"})
+                
+                title = og_title["content"] if og_title else ""
+                desc = og_desc["content"] if og_desc else ""
+                fb_text = f"{title}\n{desc}".strip()
+                
+            # 🛡️ ตัวกรองขั้นสุด: แบนคำว่า 404 ทิ้งให้หมด!
+            if not fb_text or re.search(r'(log in to facebook|เข้าสู่ระบบ|error 404|page not found|ไม่พบเนื้อหา|ไม่พบหน้านี้)', fb_text, re.IGNORECASE):
+                return "Error: Facebook บล็อกเนื้อหา (Soft 404/Login)"
+            elif len(fb_text) < 60: 
                 return "Error: เนื้อหาสั้นเกินไป ระบบจะพยายามค้นหาลิงก์ข่าวที่ซ่อนอยู่"
                 
-            return f"โพสต์จาก Facebook:\n{final_fb_content}"
+            return f"โพสต์จาก Facebook:\n{fb_text}"
 
-        # ================= 4. Social ทั่วไปอื่นๆ =================
         response = requests.get(url, headers=headers, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
         
@@ -258,6 +263,9 @@ def force_extract_news_link(social_url: str) -> str:
         return ""
 
 def fetch_with_fallback(url: str) -> str:
+    # 🚨 เพิ่มตัวกรอง Error 404 เพื่อกันไม่ให้ส่งขยะไปให้ AI แบบ 100%
+    anti_bot_patterns = r'(cloudflare|500 internal server error|403 forbidden|access denied|captcha|not acceptable|checking your browser|security check|just a moment|log in to facebook|เข้าสู่ระบบ|error 404|page not found|ไม่พบหน้านี้|content not found)'
+    
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36", 
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -275,7 +283,8 @@ def fetch_with_fallback(url: str) -> str:
                 element.extract()
             clean_text = re.sub(r'\s+', ' ', soup.get_text(separator=' ', strip=True)).strip()
             
-            if len(clean_text) > 100 and not re.search(r'(500 internal server error|403 forbidden|access denied)', clean_text, re.IGNORECASE):
+            # ถ้ามีคำว่า 404 จะถูกบล็อกตรงนี้ ไม่ส่งให้ AI
+            if len(clean_text) > 100 and not re.search(anti_bot_patterns, clean_text, re.IGNORECASE):
                 return clean_text
     except Exception:
         pass
@@ -285,7 +294,7 @@ def fetch_with_fallback(url: str) -> str:
         response = requests.get(jina_url, headers={"Accept": "text/plain", "X-Retain-Images": "none"}, timeout=20)
         if response.status_code == 200:
             content = response.text
-            if len(content.strip()) > 100 and not re.search(r'(500 internal server error|403 forbidden|access denied)', content, re.IGNORECASE): 
+            if len(content.strip()) > 100 and not re.search(anti_bot_patterns, content, re.IGNORECASE): 
                 return content
     except Exception:
         pass
@@ -296,7 +305,7 @@ def extract_text_from_url(url: str) -> dict:
     """ศูนย์กลางสกัดข้อมูล"""
     try:
         url = clean_mobile_url(url)
-        url = resolve_facebook_redirects(url) # 🚀 ย้ายมาใช้เครื่องมือใหม่ 
+        url = resolve_facebook_redirects(url) 
         url = expand_url(url)
         url = clean_mobile_url(url) 
         
@@ -342,7 +351,7 @@ def extract_text_from_url(url: str) -> dict:
                     return {"content": final_content, "actual_url": actual_primary_url}
             
             if "Error" in content:
-                return {"error": "ไม่สามารถดึงข้อมูลข่าวสารที่มีเนื้อหาเพียงพอจากโพสต์นี้ได้"}
+                return {"error": "ไม่สามารถดึงข้อมูลข่าวสารที่มีเนื้อหาเพียงพอจากโพสต์นี้ได้ (ติดการป้องกันของแพลตฟอร์ม)"}
                 
             return {"content": content, "actual_url": actual_primary_url}
             
