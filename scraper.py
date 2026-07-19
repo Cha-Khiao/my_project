@@ -86,7 +86,6 @@ def expand_url(url: str) -> str:
 def extract_social_metadata(url: str) -> str:
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)"}
     try:
-        # ================= 1. Twitter (X) =================
         if "x.com/" in url or "twitter.com/" in url:
             match = re.search(r'(?:x|twitter)\.com(/.*)', url)
             if match:
@@ -98,7 +97,6 @@ def extract_social_metadata(url: str) -> str:
                     return f"{data.get('user_name', 'ผู้ใช้งาน X')}\n{data.get('text', '')}".strip()
                 return f"Error: API ของ X ปฏิเสธการดึงข้อมูล"
 
-        # ================= 2. Instagram =================
         elif "instagram.com/" in url:
             match = re.search(r'instagram\.com/(?:p|reel|tv)/([^/?]+)', url)
             if match:
@@ -119,58 +117,31 @@ def extract_social_metadata(url: str) -> str:
                 except Exception: pass
             return "Error: ไม่สามารถทะลวงระบบความปลอดภัยของ Instagram ได้ในขณะนี้"
 
-        # ================= 3. Facebook (อัปเกรดแก้ปัญหา AI ตรวจหน้า Login) =================
+        # 🚀 [ดึงเฉพาะเนื้อหาที่สะอาดที่สุดของ Facebook] ป้องกันปุ่มขยะหลุดไปให้ AI อ่าน
         elif "facebook.com" in url or "fb.watch" in url:
-            fb_text = ""
-            
-            # 🚀 ท่าที่ 1: ใช้ Microlink API (ทัพหน้าที่ทะลวง Cloud IP ได้ดีเยี่ยม)
             try:
-                res = requests.get(f"https://api.microlink.io/?url={quote(url)}", timeout=12)
-                if res.status_code == 200:
-                    data = res.json().get("data", {})
-                    title = data.get("title", "")
-                    desc = data.get("description", "")
-                    # กรองคำว่า Login ทิ้งตั้งแต่ต้นทาง
-                    if title and not re.search(r'(log in|เข้าสู่ระบบ|error|page not found)', title, re.IGNORECASE):
-                        fb_text = f"{title}\n{desc}".strip()
-            except Exception: pass
-
-            # 🚀 ท่าที่ 2: ใช้ AllOrigins ช่วยดึงหน้า Embed (หลบ WAF)
-            if not fb_text:
-                try:
-                    embed_url = f"https://www.facebook.com/plugins/post.php?href={quote(url, safe=':/%?=&-_.#')}"
-                    proxy_url = f"https://api.allorigins.win/get?url={quote(embed_url)}"
-                    res = requests.get(proxy_url, timeout=12)
-                    if res.status_code == 200:
-                        soup = BeautifulSoup(res.json().get("contents", ""), 'html.parser')
-                        text_parts = [p.get_text(strip=True) for p in soup.find_all(['p', 'span']) if len(p.get_text(strip=True)) > 20]
-                        if text_parts:
-                            ext_text = "\n".join(set(text_parts))
-                            if not re.search(r'(เข้าสู่ระบบ|Log In|error 404)', ext_text, re.IGNORECASE):
-                                fb_text = ext_text
-                except Exception: pass
+                req_headers = {"User-Agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"}
+                res_meta = requests.get(url, headers=req_headers, timeout=15, allow_redirects=True)
+                res_meta.encoding = 'utf-8'
+                soup_meta = BeautifulSoup(res_meta.text, 'html.parser')
+                
+                og_title = soup_meta.find("meta", property="og:title") or soup_meta.find("meta", attrs={"name": "og:title"})
+                og_desc = soup_meta.find("meta", property="og:description") or soup_meta.find("meta", attrs={"name": "og:description"})
+                
+                title = og_title["content"] if og_title else ""
+                desc = og_desc["content"] if og_desc else ""
+                fb_text = f"{title}\n{desc}".strip()
+                
+                # ถ้าเจอคำพวกนี้ แปลว่าเป็นขยะจากหน้า Login ให้ทิ้งทันที
+                garbage_patterns = r'(log in to facebook|เข้าสู่ระบบ|error 404|page not found|ไม่พบหน้านี้|สมัครใช้งาน|create new account|forgotten password)'
+                if not fb_text or re.search(garbage_patterns, fb_text, re.IGNORECASE):
+                    return "Error: Facebook บล็อกแคปชั่น (ติด Login Wall)"
+                elif len(fb_text) < 20 and "facebook" in fb_text.lower():
+                    return "Error: ดึงมาได้เพียงชื่อเพจ ไม่มีเนื้อหาข่าว"
                     
-            # 🚀 ท่าที่ 3: Local Fallback (ท่าเดิม)
-            if not fb_text:
-                try:
-                    req_headers = {"User-Agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"}
-                    res_meta = requests.get(url, headers=req_headers, timeout=15, allow_redirects=True)
-                    res_meta.encoding = 'utf-8'
-                    soup_meta = BeautifulSoup(res_meta.text, 'html.parser')
-                    og_title = soup_meta.find("meta", property="og:title") or soup_meta.find("meta", attrs={"name": "og:title"})
-                    og_desc = soup_meta.find("meta", property="og:description") or soup_meta.find("meta", attrs={"name": "og:description"})
-                    title = og_title["content"] if og_title else ""
-                    desc = og_desc["content"] if og_desc else ""
-                    fb_text = f"{title}\n{desc}".strip()
-                except Exception: pass
-                
-            # 🛡️ ฆ่าทิ้งทันที! ถ้าเจอเศษซากของหน้า Login 
-            if not fb_text or re.search(r'(log in|sign up|เข้าสู่ระบบ|error 404|page not found|ไม่พบเนื้อหา)', fb_text, re.IGNORECASE):
-                return "Error: Facebook บล็อกการดึงข้อมูลบนเซิร์ฟเวอร์นี้ (Login Wall)"
-            elif len(fb_text) < 30: 
-                return "Error: เนื้อหาแคปชั่นสั้นเกินไป"
-                
-            return f"โพสต์จาก Facebook:\n{fb_text}"
+                return f"โพสต์จาก Facebook:\n{fb_text}"
+            except Exception:
+                return "Error: ขัดข้องระหว่างดึงแคปชั่น"
 
         response = requests.get(url, headers=headers, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -184,6 +155,7 @@ def extract_social_metadata(url: str) -> str:
         return f"Error: การสกัดข้อมูล Social Media ล้มเหลว - {str(e)}"
 
 def force_extract_news_link(social_url: str) -> str:
+    """ทะลวงหาลิงก์ข่าวจริง (Thairath, Khaosod ฯลฯ) ที่ซ่อนอยู่ใน Facebook"""
     if "x.com" in social_url.lower() or "twitter.com" in social_url.lower(): return ""
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)"}
     if "facebook.com" in social_url.lower() or "fb.watch" in social_url.lower():
@@ -202,8 +174,8 @@ def force_extract_news_link(social_url: str) -> str:
     except Exception: return ""
 
 def fetch_with_fallback(url: str) -> str:
-    # เพิ่มคำดักจับขั้นสุด เพื่อกันไม่ให้ส่งหน้า Login ไปให้ AI ตรวจ 
-    anti_bot_patterns = r'(cloudflare|500 internal server error|403 forbidden|access denied|captcha|not acceptable|checking your browser|security check|just a moment|log in|sign up|เข้าสู่ระบบ|error 404|page not found|ไม่พบหน้านี้|content not found|see more on facebook|คุณต้องเข้าสู่ระบบ)'
+    """ฟังก์ชันดึงเว็บข่าวทั่วไป (ห้ามใช้ดึงลิงก์โซเชียลเด็ดขาด)"""
+    anti_bot_patterns = r'(cloudflare|500 internal server error|403 forbidden|access denied|captcha|not acceptable|checking your browser|security check|just a moment)'
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36", 
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -254,33 +226,40 @@ def extract_text_from_url(url: str) -> dict:
         social_domains = ["facebook.com", "fb.watch", "x.com", "twitter.com", "tiktok.com", "instagram.com"]
         is_social = any(domain in url.lower() for domain in social_domains)
         
-        content = ""
         actual_primary_url = url
         
         if is_social:
             content = extract_social_metadata(url)
-            if content and re.search(gambling_keywords, content, re.IGNORECASE):
-                return {"error": "GAMBLING_DETECTED"}
-                
-            # 🚀 ค้นหาลิงก์ข่าวจริง (Thairath, Khaosod) ที่ซ่อนอยู่ในโพสต์ Facebook
+            
+            # ค้นหาลิงก์ข่าวจริง (Thairath, Khaosod) ที่ซ่อนอยู่ในโพสต์
             hidden_news_url = force_extract_news_link(url)
+            actual_news_content = ""
+            
             if hidden_news_url:
                 actual_primary_url = hidden_news_url
-                actual_news_content = fetch_with_fallback(actual_primary_url)
+                actual_news_content = fetch_with_fallback(hidden_news_url)
                 
-                if actual_news_content:
-                    final_content = f"[พรีวิวจากโซเชียล]:\n{content}\n\n[เนื้อหาข่าวจริงที่ซ่อนอยู่ ({actual_primary_url})]:\n{actual_news_content}"
-                    if re.search(gambling_keywords, final_content, re.IGNORECASE): return {"error": "GAMBLING_DETECTED"}
-                    return {"content": final_content, "actual_url": actual_primary_url}
+            # สร้างเนื้อหาสุดท้ายที่จะส่งให้ AI
+            final_content = ""
+            if "Error" not in content:
+                final_content += f"{content}\n\n"
+            if actual_news_content:
+                final_content += f"[เนื้อหาข่าวจริงที่ซ่อนอยู่ ({actual_primary_url})]:\n{actual_news_content}"
+                
+            final_content = final_content.strip()
             
-            # 🚨 [จุดบั๊กที่ถูกแก้ไข]: ถ้าดึงโซเชียลไม่ได้ ให้จบการทำงานแล้วคืนค่า Error ไปโชว์หน้าเว็บ
-            # ห้ามดันทุรังเอาลิงก์เฟซบุ๊กไปยัดใส่ fetch_with_fallback เพราะมันจะไปกวาดหน้า Login มาให้ AI ตรวจ!
-            if "Error" in content:
-                return {"error": "ข้อจำกัดด้านความปลอดภัย: ไม่สามารถเข้าถึงเนื้อหาต้นฉบับบนแพลตฟอร์มนี้ได้"}
+            # 🚨 ถ้าไม่มีเนื้อหาข่าวเลย (พังทั้งแคปชั่น พังทั้งลิงก์ซ่อน) ให้จบการทำงานตรงนี้เลย!
+            # ห้ามส่งลิงก์ Facebook ไปให้ fetch_with_fallback เด็ดขาด!
+            if not final_content:
+                return {"error": "ไม่สามารถดึงข้อมูลเนื้อหาจากโพสต์นี้ได้ (เนื้อหาถูกปิดกั้นการเข้าถึง)"}
                 
-            return {"content": content, "actual_url": actual_primary_url}
+            if re.search(gambling_keywords, final_content, re.IGNORECASE): 
+                return {"error": "GAMBLING_DETECTED"}
+                
+            return {"content": final_content, "actual_url": actual_primary_url}
             
         else:
+            # ถ้าเป็นเว็บข่าวปกติ (ไม่ใช่ Facebook) ดึงข้อมูลได้ตามปกติ
             actual_news_content = fetch_with_fallback(url)
             if actual_news_content:
                 if re.search(gambling_keywords, actual_news_content, re.IGNORECASE): return {"error": "GAMBLING_DETECTED"}
