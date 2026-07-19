@@ -3,14 +3,22 @@ import requests
 import html
 import codecs
 from bs4 import BeautifulSoup
-from urllib.parse import unquote, quote
+from urllib.parse import unquote, quote, urlparse, parse_qs, urlencode, urlunparse
 
 # ==========================================
 # 1. ระบบทำความสะอาดและตรวจสอบ URL
 # ==========================================
 def clean_mobile_url(url: str) -> str:
     url = unquote(url.strip())
+    
+    # ดึงเฉพาะ URL ออกจากข้อความ (เผื่อผู้ใช้แชร์จากมือถือแล้วมีข้อความภาษาไทยปนมา)
+    url_match = re.search(r'(https?://[^\s]+)', url)
+    if url_match:
+        url = url_match.group(1)
+        
     if url.endswith('#'): url = url[:-1]
+    
+    # แกะลิงก์ Redirect ของ Facebook
     if "l.facebook.com/l.php?u=" in url:
         try: url = unquote(url.split("u=")[1].split("&")[0])
         except Exception: pass
@@ -18,19 +26,20 @@ def clean_mobile_url(url: str) -> str:
     url = url.replace("://m.facebook.com", "://www.facebook.com")
     url = url.replace("://mobile.twitter.com", "://twitter.com")
     
-    if "?" in url:
-        base_url, query_str = url.split("?", 1)
-        fragment = ""
-        if "#" in query_str:
-            query_str, fragment = query_str.split("#", 1)
-            fragment = "#" + fragment
-        params = query_str.split("&")
-        clean_params = [
-            p for p in params 
-            if not p.startswith(('mibextid=', 'igsh=', 'si=', 'fbclid=', 'is_from_webapp=', 'h=', 's=', 't=', 'rdid=', 'share_url=', 'utm_'))
-        ]
-        if clean_params: url = f"{base_url}?{'&'.join(clean_params)}{fragment}"
-        else: url = f"{base_url}{fragment}"
+    # จัดการ Query Parameters ที่เป็น Tracking ด้วย urlparse (ปลอดภัยและรองรับอนาคตได้ดีกว่า)
+    parsed = urlparse(url)
+    if parsed.query:
+        query_dict = parse_qs(parsed.query)
+        # รายชื่อพารามิเตอร์ขยะที่มาจากมือถือและโซเชียล
+        spam_params = ['mibextid', 'igsh', 'si', 'fbclid', 'is_from_webapp', 'h', 's', 't', 'rdid', 'share_url', 'utm_']
+        
+        # คัดเอาเฉพาะ Parameter ที่ไม่ใช่ขยะ
+        clean_query = {k: v for k, v in query_dict.items() if not any(k.startswith(spam) for spam in spam_params)}
+        
+        # ประกอบ URL กลับคืน
+        parsed = parsed._replace(query=urlencode(clean_query, doseq=True))
+        url = urlunparse(parsed)
+        
     return url
 
 def expand_url(url: str) -> str:
@@ -84,7 +93,7 @@ def is_valid_content(title: str, text: str, url: str) -> bool:
         'ส่งข้อความ', 'วิดีโอคอล', 'ฟีเจอร์', 'แอปพลิเคชัน', 'ดาวน์โหลด', 'messenger'
     ]
     hit_count = sum(1 for word in system_keywords if word in combined)
-    if hit_count >= 3: # ถ้ามีคำพวกนี้รวมกัน 3 คำขึ้นไป ตีเป็นหน้าโฆษณาทันที
+    if hit_count >= 3: 
         return False
         
     # 4. ล้าง HTML และจัดระเบียบ ก่อนเช็คความยาวจริง
@@ -137,9 +146,14 @@ def extract_social_metadata(url: str) -> str:
             return "Error: ไม่สามารถทะลวงระบบความปลอดภัยของ Instagram ได้"
 
         elif "facebook.com" in url or "fb.watch" in url:
-            # ใช้ Session เพื่อติดตาม URL สุดท้ายว่าโดน Redirect ไปหน้า Messenger หรือไม่
             session = requests.Session()
-            req_headers = {"User-Agent": "facebookexternalhit/1.1", "Accept-Language": "th-TH,th;q=0.9"}
+            # ปลอมตัวเป็นระบบพรีวิวของ Facebook (Facebook Crawler) เพื่อลดการถูกบล็อก
+            req_headers = {
+                "User-Agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)", 
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "th-TH,th;q=0.9",
+                "Connection": "keep-alive"
+            }
             
             fb_title = ""
             fb_desc = ""
@@ -147,7 +161,7 @@ def extract_social_metadata(url: str) -> str:
             
             try:
                 res_meta = session.get(url, headers=req_headers, timeout=15, allow_redirects=True)
-                final_url = res_meta.url # เช็คเส้นทางสุดท้าย
+                final_url = res_meta.url 
                 res_meta.encoding = 'utf-8'
                 soup = BeautifulSoup(res_meta.text, 'html.parser')
                 og_title = soup.find("meta", property="og:title") or soup.find("meta", attrs={"name": "og:title"})
@@ -159,8 +173,8 @@ def extract_social_metadata(url: str) -> str:
 
             # นำเข้าสู่ด่านตรวจคนเข้าเมือง (Gateway Validation)
             if not is_valid_content(fb_title, fb_desc, final_url):
-                # ถ้าไม่ผ่าน (เช่น เป็นหน้า Messenger, Login, หรือสั้นไป) ไม่ต้องพยายามต่อ ให้เตะทิ้งทันที
-                return "Error: ระบบป้องกันของแพลตฟอร์มบล็อกการเข้าถึงแคปชั่น"
+                # แจ้ง Error ให้ชัดเจนและแนะนำทางแก้
+                return "Error: โพสต์ Facebook ถูกจำกัดการเข้าถึง แนะนำให้คัดลอกข้อความไปวางที่แท็บ 'ตรวจสอบจากข้อความ' ครับ"
             
             # ถ้าผ่านด่านมาได้ แปลว่าเป็นข่าวของจริง ทำการล้างปุ่ม UI ออกก่อนส่งให้ AI
             ui_patterns = r'(ดูโพสต์เพิ่มเติมจาก|ดูเพิ่มเติมจาก|บน Facebook|ไม่ใช่ตอนนี้|วิดีโอที่เกี่ยวข้อง|แนะนำสำหรับคุณ|หาเพื่อนบน Facebook)'
