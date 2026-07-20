@@ -10,7 +10,8 @@ import concurrent.futures
 # ================= สร้าง Session ที่สามารถ Retry ตัวเองได้ =================
 def get_retry_session():
     session = requests.Session()
-    retry = Retry(total=3, backoff_factor=0.5, status_forcelist=[429, 500, 502, 503, 504])
+    # 🌟 ปรับ Status Forcelist ให้ครอบคลุมมากขึ้น
+    retry = Retry(total=3, backoff_factor=0.5, status_forcelist=[403, 429, 500, 502, 503, 504])
     adapter = HTTPAdapter(max_retries=retry)
     session.mount('http://', adapter)
     session.mount('https://', adapter)
@@ -33,10 +34,9 @@ def is_valid_news_title(title: str, query: str = "") -> bool:
         core_words = [w for w in query_words if len(w) > 2]
         if core_words:
             match = any(word.lower() in title.lower() for word in core_words)
-            # 🛠️ เพิ่มความยืดหยุ่น: ถ้าคีย์เวิร์ดรวมมาเป็นคำยาวๆ คำเดียว ให้ยอมผ่านไปเพื่อให้ AI เป็นตัวตัดสินเอง
             if not match and len(core_words) > 1: 
                 return False
-            
+                
     return True
 
 def search_news_references(query: str, num_results: int = 5) -> list:
@@ -52,19 +52,21 @@ def search_news_references(query: str, num_results: int = 5) -> list:
         'bangkokbiznews.com', 'prachachat.net', 'thansettakij.com', 'posttoday.com', 
         'moneyandbanking.co.th', 'efinancethai.com', 'longtunman.com',
         'isranews.org', 'hfocus.org', 'ilaw.or.th', 'thaipublica.org', 
-        'factcheckthailand', 'cofact.org',
+        'factcheckthailand', 'cofact.org', 'sure.factcheckthailand.org',
         'thestandard.co', 'thematter.co', 'sanook.com', 'kapook.com', 
         'spacebar.th', 'waymagazine.org', 'themomentum.co', 'feedforfuture.co',
-        'today.line.me', 'bbc.com/thai', 'voicetv.co.th', 'dw.com/th'
+        'today.line.me', 'bbc.com', 'voicetv.co.th', 'dw.com'
     ]
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
     session = get_retry_session()
 
-    def fetch_google():
+    def fetch_google_rss():
         res = []
         try:
             rss_url = f"https://news.google.com/rss/search?q={quote(query)}&hl=th&gl=TH&ceid=TH:th"
-            # 🛠️ ลด timeout ลงจาก 10 เหลือ 8 วินาที เพื่อให้แสดงผลรวมเร็วขึ้น
             res_rss = session.get(rss_url, headers=headers, timeout=8)
             if res_rss.status_code == 200:
                 root = ET.fromstring(res_rss.content)
@@ -76,11 +78,29 @@ def search_news_references(query: str, num_results: int = 5) -> list:
         except Exception: pass
         return res
 
-    def fetch_ddg():
+    def fetch_bing_rss():
+        """ 🚀 ทะลวง Bing ด้วย RSS แทนการ Scrape HTML เพื่อกัน Cloud ถูกบล็อก """
+        res = []
+        try:
+            rss_url = f"https://www.bing.com/news/search?q={quote(query)}&format=rss&cc=th"
+            res_rss = session.get(rss_url, headers=headers, timeout=8)
+            if res_rss.status_code == 200:
+                root = ET.fromstring(res_rss.content)
+                for item in root.findall('.//item'):
+                    title = item.find('title').text if item.find('title') is not None else ""
+                    link = item.find('link').text if item.find('link') is not None else ""
+                    
+                    domain = urlparse(link.lower()).netloc.replace('www.', '')
+                    if any(wd in domain for wd in whitelist) and is_valid_news_title(title, query):
+                        res.append({'title': title, 'href': link, 'body': "Bing News"})
+        except Exception: pass
+        return res
+        
+    def fetch_ddg_html():
+        """ 🛡️ เก็บ DDG ไว้เป็นแผนสำรอง แต่รู้ไว้ว่ามีสิทธิ์โดน Cloud บล็อกสูง """
         res = []
         try:
             ddg_url = f"https://html.duckduckgo.com/html/?q={quote(query + ' ข่าว')}"
-            # 🛠️ ลด timeout ลงจาก 12 เหลือ 8 วินาที
             res_ddg = session.get(ddg_url, headers=headers, timeout=8)
             if res_ddg.status_code == 200:
                 soup = BeautifulSoup(res_ddg.text, 'html.parser')
@@ -94,37 +114,19 @@ def search_news_references(query: str, num_results: int = 5) -> list:
                     if "uddg=" in link:
                         link = unquote(link.split("uddg=")[1].split("&")[0])
                     if not link or not title: continue
+                    
                     domain = urlparse(link.lower()).netloc.replace('www.', '')
                     if any(wd in domain for wd in whitelist) and is_valid_news_title(title, query):
                         res.append({'title': title, 'href': link, 'body': "DuckDuckGo"})
         except Exception: pass
         return res
 
-    def fetch_bing():
-        res = []
-        try:
-            web_url = f"https://www.bing.com/search?q={quote(query + ' ข่าว')}"
-            # 🛠️ ลด timeout ลงจาก 12 เหลือ 8 วินาที
-            res_web = session.get(web_url, headers=headers, timeout=8)
-            if res_web.status_code == 200:
-                soup = BeautifulSoup(res_web.text, 'html.parser')
-                for li in soup.find_all('li', class_='b_algo'):
-                    a_tag = li.find('a')
-                    if not a_tag: continue
-                    link = a_tag.get('href', '')
-                    title = a_tag.text
-                    if not link: continue
-                    domain = urlparse(link.lower()).netloc.replace('www.', '')
-                    if any(wd in domain for wd in whitelist) and is_valid_news_title(title, query):
-                        res.append({'title': title, 'href': link, 'body': "Bing Search"})
-        except Exception: pass
-        return res
-
     results = []
     urls_seen = set()
 
+    # รัน 3 ช่องทางพร้อมกัน (Concurrency)
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-        futures = [executor.submit(fetch_google), executor.submit(fetch_ddg), executor.submit(fetch_bing)]
+        futures = [executor.submit(fetch_google_rss), executor.submit(fetch_bing_rss), executor.submit(fetch_ddg_html)]
         
         for future in concurrent.futures.as_completed(futures):
             engine_results = future.result()
