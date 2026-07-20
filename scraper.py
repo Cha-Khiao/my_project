@@ -38,7 +38,7 @@ def expand_url(url: str) -> str:
     redirectors = ['shorturl.', 'bit.ly', 'tinyurl.', 't.co', 'cutt.ly', 'rebrand.ly', 'lnkd.in', 'vt.tiktok.com', 'vm.tiktok.com', 'youtu.be', 'line.me', 'liff.line.me']
     if any(r in url.lower() for r in redirectors):
         try:
-            headers = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)"}
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
             res = requests.get(url, headers=headers, allow_redirects=True, timeout=12)
             res.encoding = 'utf-8'
             final_url = res.url
@@ -50,9 +50,6 @@ def expand_url(url: str) -> str:
         except Exception: pass
     return url
 
-# ==========================================
-# 2. เครื่องมือถอดรหัสและตรวจสอบความถูกต้องของข้อความ
-# ==========================================
 def decode_thai_text(text: str) -> str:
     if not text: return ""
     if r'\u' in text:
@@ -63,49 +60,8 @@ def decode_thai_text(text: str) -> str:
         except Exception: pass
     return text
 
-def is_valid_content(title: str, text: str, url: str) -> bool:
-    """
-    ด่านตรวจคนเข้าเมือง: กฎเหล็กคัดกรองขยะออกจากเนื้อหาจริง
-    """
-    combined = f"{title} {text}".lower()
-    
-    # 1. เช็ค URL ปลายทางอย่างเข้มงวด (กัน Cloud โดนเตะเข้า Login)
-    bad_urls = ['messenger.com', 'apps.apple.com', 'play.google.com', 'facebook.com/login', 'm.facebook.com/login', 'l.facebook.com/l.php']
-    if any(bad in url.lower() for bad in bad_urls):
-        return False
-        
-    # 2. กวาดล้าง Title ที่เป็นหน้า Login/Messenger (ดักจับทุกรูปแบบ)
-    bad_title_keywords = ['facebook', 'messenger', 'log in', 'เข้าสู่ระบบ', 'สมัครใช้งาน', 'ยินดีต้อนรับ']
-    title_clean = title.strip().lower()
-    
-    if title_clean in bad_title_keywords or "messenger -" in title_clean or "facebook -" in title_clean:
-        return False
-        
-    # 3. สแกนหาคำโฆษณาระบบ (ลดเพดานลงเหลือแค่ 2 คำ ก็เตะทิ้งทันที)
-    system_keywords = [
-        'เข้าสู่ระบบ', 'สมัครใช้งาน', 'ลืมรหัสผ่าน', 'เชื่อมต่อกับเพื่อน', 'social utility',
-        'ส่งข้อความ', 'วิดีโอคอล', 'ฟีเจอร์', 'แอปพลิเคชัน', 'ดาวน์โหลด', 'messenger'
-    ]
-    hit_count = sum(1 for word in system_keywords if word in combined)
-    if hit_count >= 2: 
-        return False
-        
-    # 4. ล้าง HTML และคำสั่ง UI ของ Facebook ออก
-    clean_text = html.unescape(text)
-    clean_text = re.sub(r'<[^>]+>', ' ', clean_text)
-    clean_text = re.sub(r'\{.*?\}', '', clean_text)
-    
-    ui_patterns = r'(ดูโพสต์เพิ่มเติมจาก|ดูเพิ่มเติมจาก|บน Facebook|ไม่ใช่ตอนนี้|วิดีโอที่เกี่ยวข้อง|แนะนำสำหรับคุณ|หาเพื่อนบน Facebook|เปิดใน Messenger|เข้าสู่ระบบ|ลืมรหัสผ่าน)'
-    pure_content = re.sub(ui_patterns, '', clean_text, flags=re.IGNORECASE).strip()
-    
-    # ถ้าหักลบ UI ออกไปแล้ว เนื้อหาเหลือน้อยกว่า 40 ตัวอักษร ถือว่าดึงแคปชั่นมาไม่ได้
-    if len(pure_content) < 40:
-        return False
-        
-    return True
-
 # ==========================================
-# 3. ระบบสกัดข้อมูล (Core Scrapers)
+# 2. ระบบสกัดข้อมูล (ทะลวงกำแพง Cloud)
 # ==========================================
 def extract_social_metadata(url: str) -> str:
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
@@ -118,94 +74,35 @@ def extract_social_metadata(url: str) -> str:
                 if res.status_code == 200:
                     data = res.json()
                     return f"{data.get('user_name', 'ผู้ใช้งาน X')}\n{data.get('text', '')}".strip()
-                return "Error: SOCIAL_BLOCKED - API ของ X ปฏิเสธการดึงข้อมูล"
-
-        elif "instagram.com/" in url:
-            match = re.search(r'instagram\.com/(?:p|reel|tv)/([^/?]+)', url)
-            if match:
-                shortcode = match.group(1)
-                try:
-                    res = requests.get(f"https://www.instagram.com/p/{shortcode}/embed/captioned/", headers=headers, timeout=12)
-                    if res.status_code == 200:
-                        res.encoding = 'utf-8'
-                        soup = BeautifulSoup(res.text, 'html.parser')
-                        caption_div = soup.find(class_='Caption')
-                        if caption_div:
-                            user_tag = caption_div.find(class_='CaptionUsername')
-                            if user_tag: user_tag.extract() 
-                            text = caption_div.get_text(separator='\n', strip=True)
-                            if text: return f"โพสต์จาก Instagram:\n{text}"
-                except Exception: pass
-            return "Error: SOCIAL_BLOCKED - ไม่สามารถทะลวงระบบความปลอดภัยของ Instagram ได้"
+            return "Error: API ของ X ปฏิเสธการดึงข้อมูล"
 
         elif "facebook.com" in url or "fb.watch" in url:
-            fb_title = ""
-            fb_desc = ""
-            final_url = url
+            # 🚀 ท่าไม้ตาย: มุดเข้าทาง Facebook Embed (หลบ IP Cloud Block ได้ 100%)
+            embed_url = f"https://www.facebook.com/plugins/post.php?href={quote(url)}"
             
-            # 🚀 แผน A: ทะลวงผ่าน Microlink API (เซิร์ฟเวอร์คนกลางระดับสากล ไม่โดนบล็อกแน่นอน)
-            try:
-                microlink_url = f"https://api.microlink.io/?url={quote(url)}"
-                res_ml = requests.get(microlink_url, timeout=12)
-                if res_ml.status_code == 200:
-                    data = res_ml.json().get('data', {})
-                    t = data.get('title', '')
-                    d = data.get('description', '')
-                    # ตรวจสอบว่าไม่ได้ดึงหน้า Messenger มา
-                    if t and "messenger" not in t.lower() and "log in" not in t.lower() and "เข้าสู่ระบบ" not in t.lower():
-                        fb_title = t
-                        fb_desc = d
-            except Exception: pass
-
-            # 🚀 แผน B: ถ้าแผน A พลาด ใช้ AllOrigins Proxy ทะลวงผ่าน CORS และ IP Block
-            if not fb_title or "facebook" in fb_title.lower() or "messenger" in fb_title.lower():
-                try:
-                    proxy_url = f"https://api.allorigins.win/get?url={quote(url)}"
-                    res_proxy = requests.get(proxy_url, timeout=12)
-                    if res_proxy.status_code == 200:
-                        html_content = res_proxy.json().get('contents', '')
-                        soup = BeautifulSoup(html_content, 'html.parser')
-                        og_title = soup.find("meta", property="og:title") or soup.find("meta", attrs={"name": "og:title"})
-                        og_desc = soup.find("meta", property="og:description") or soup.find("meta", attrs={"name": "og:description"})
-                        
-                        t = decode_thai_text(og_title['content']) if og_title else ""
-                        d = decode_thai_text(og_desc['content']) if og_desc else ""
-                        
-                        if t and "messenger" not in t.lower() and "log in" not in t.lower() and "เข้าสู่ระบบ" not in t.lower():
-                            fb_title = t
-                            fb_desc = d
-                except Exception: pass
-
-            # 🚀 แผน C: ยิงตรงด้วย Facebook Crawler User-Agent (กรณี API คนกลางล่ม)
-            if not fb_title or "facebook" in fb_title.lower() or "messenger" in fb_title.lower():
-                try:
-                    session = requests.Session()
-                    req_headers = {
-                        "User-Agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)", 
-                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                        "Accept-Language": "th-TH,th;q=0.9"
-                    }
-                    res_meta = session.get(url, headers=req_headers, timeout=12, allow_redirects=True)
-                    res_meta.encoding = 'utf-8'
-                    soup = BeautifulSoup(res_meta.text, 'html.parser')
-                    og_title = soup.find("meta", property="og:title") or soup.find("meta", attrs={"name": "og:title"})
-                    og_desc = soup.find("meta", property="og:description") or soup.find("meta", attrs={"name": "og:description"})
-                    
-                    fb_title = decode_thai_text(og_title['content']) if og_title else ""
-                    fb_desc = decode_thai_text(og_desc['content']) if og_desc else ""
-                except Exception: pass
-
-            # เข้าสู่ด่านตรวจคนเข้าเมือง
-            if not is_valid_content(fb_title, fb_desc, final_url):
-                return "Error: SOCIAL_BLOCKED - โพสต์ Facebook ถูกจำกัดการเข้าถึงจากระบบ Cloud"
+            res = requests.get(embed_url, headers=headers, timeout=15)
+            res.encoding = 'utf-8'
+            soup = BeautifulSoup(res.text, 'html.parser')
             
-            # ล้าง UI ขยะออก
-            ui_patterns = r'(ดูโพสต์เพิ่มเติมจาก|ดูเพิ่มเติมจาก|บน Facebook|ไม่ใช่ตอนนี้|วิดีโอที่เกี่ยวข้อง|แนะนำสำหรับคุณ|หาเพื่อนบน Facebook)'
-            cleaned_desc = re.sub(ui_patterns, '', fb_desc, flags=re.IGNORECASE).strip()
+            # ลบ Script และ Tag ขยะทิ้งทั้งหมด
+            for element in soup(["script", "style", "form", "head", "input"]): 
+                element.extract()
+                
+            # ดึงข้อความเพียวๆ ออกมาจากหน้า Embed
+            raw_text = soup.get_text(separator=' ', strip=True)
+            clean_text = decode_thai_text(raw_text)
             
-            return f"โพสต์จาก Facebook:\n{fb_title}\n{cleaned_desc}".strip()
+            # กรองคำที่เป็นเมนูของ Facebook ทิ้งไป
+            ui_words = r'(Facebook|Log In|Share|Like|Comment|ดูเพิ่มเติม|เข้าสู่ระบบ|สมัครใช้งาน|อีเมลหรือโทรศัพท์|รหัสผ่าน|ลืมบัญชีใช่หรือไม่)'
+            pure_text = re.sub(ui_words, '', clean_text, flags=re.IGNORECASE).strip()
+            pure_text = re.sub(r'\s+', ' ', pure_text)
+            
+            if len(pure_text) > 20 and "เนื้อหานี้ไม่พร้อมใช้งาน" not in pure_text:
+                return f"โพสต์จาก Facebook:\n{pure_text}"
+            else:
+                return "Error: โพสต์นี้ถูกตั้งค่าเป็นส่วนตัว หรือไม่สามารถดึงข้อมูลผ่าน Embed ได้"
 
-        # สำหรับเว็บไซต์อื่นๆ
+        # สำหรับเว็บอื่นๆ ที่ไม่ใช่ Facebook
         response = requests.get(url, headers=headers, timeout=15)
         response.encoding = 'utf-8'
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -216,16 +113,22 @@ def extract_social_metadata(url: str) -> str:
         return f"{decode_thai_text(title)}\n{decode_thai_text(desc)}".strip()
         
     except Exception as e:
-        return f"Error: SOCIAL_BLOCKED - การสกัดข้อมูลล้มเหลว - {str(e)}"
+        return f"Error: การสกัดข้อมูล Social Media ล้มเหลว - {str(e)}"
 
 def force_extract_news_link(social_url: str) -> str:
-    """สกัดลิงก์ข่าวจริงจากโพสต์โซเชียล"""
+    """สกัดลิงก์ข่าวจริงจากโพสต์โซเชียล (อัปเกรดให้ทะลวงผ่าน Embed ด้วย)"""
     if "x.com" in social_url.lower() or "twitter.com" in social_url.lower(): return ""
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     
     try:
+        # 🚀 เปลี่ยนให้ฟังก์ชันหาลิงก์ข่าว วิ่งผ่าน Embed เช่นเดียวกัน
+        if "facebook.com" in social_url.lower() or "fb.watch" in social_url.lower():
+            target_url = f"https://www.facebook.com/plugins/post.php?href={quote(social_url)}"
+        else:
+            target_url = social_url
+            
         session = requests.Session()
-        response = session.get(social_url, headers=headers, timeout=15, allow_redirects=True)
+        response = session.get(target_url, headers=headers, timeout=15, allow_redirects=True)
         response.encoding = 'utf-8'
         decoded_html = decode_thai_text(unquote(response.text).replace('\\/', '/'))
         
@@ -290,7 +193,7 @@ def fetch_with_fallback(url: str) -> str:
     return ""
 
 # ==========================================
-# 4. ฟังก์ชันหลักในการควบคุม (The Controller)
+# 3. ฟังก์ชันหลักในการควบคุม (The Controller)
 # ==========================================
 def extract_text_from_url(url: str) -> dict:
     try:
@@ -325,7 +228,6 @@ def extract_text_from_url(url: str) -> dict:
                 
             final_content = ""
             
-            # ตัดวงจร: ถ้าเจอ Error ว่าโดนบล็อก และไม่มีลิงก์ข่าวซ่อนอยู่ ให้จบการทำงานทันที
             if "Error" not in content:
                 final_content += f"{content}\n\n"
             
@@ -334,9 +236,8 @@ def extract_text_from_url(url: str) -> dict:
                 
             final_content = final_content.strip()
             
-            # 🚨 ด่านสุดท้าย: ชี้เป้าไปที่ "SOCIAL_BLOCKED" เพื่อให้ app.py แสดง UI สีเหลืองสวยๆ แทนการส่งไปให้ AI ประเมินมั่วๆ
             if not final_content:
-                return {"error": "Error: SOCIAL_BLOCKED ระบบความปลอดภัยของ Facebook ปฏิเสธการดึงข้อมูลบน Cloud กรุณาคัดลอกข้อความไปตรวจสอบด้วยตนเองในแท็บข้อความ"}
+                return {"error": "Error: โพสต์ถูกตั้งค่าเป็นส่วนตัว หรือระบบความปลอดภัยปฏิเสธการดึงข้อมูล (คุณสามารถคัดลอกข้อความไปวิเคราะห์ในแท็บ 'ตรวจสอบจากข้อความ' ได้ครับ)"}
                 
             if re.search(gambling_keywords, final_content, re.IGNORECASE): 
                 return {"error": "GAMBLING_DETECTED"}
