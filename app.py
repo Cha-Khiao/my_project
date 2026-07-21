@@ -15,7 +15,6 @@ from search import search_news_references
 from llm import analyze_news_with_qwen, generate_search_keywords, classify_content
 
 # ================= 1. ตั้งค่า Cache =================
-@st.cache_data(ttl=3600, show_spinner=False)
 def cached_extract_text(url): 
     return extract_text_from_url(url)
 
@@ -42,7 +41,8 @@ st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;500;600;700&display=swap');
     
-    h1, h2, h3, h4, h5, h6, p, a, button, input, textarea, label, li, span { 
+    /* 🛠️ แก้ไขแล้ว: เอาแท็ก span ออกจากการบังคับฟอนต์ เพื่อไม่ให้ทับไอคอน check ของ Streamlit */
+    h1, h2, h3, h4, h5, h6, p, a, button, input, textarea, label, li { 
         font-family: 'Prompt', sans-serif !important; 
     }
     
@@ -314,8 +314,8 @@ if news_content:
             result = f"## 📌 1. สรุปประเด็นสำคัญ\nลิงก์เชื่อมโยงไปยังเว็บไซต์การพนันออนไลน์ สแปม หรือเนื้อหาหลอกลวงเกินจริง\n\n## 📊 2. การประเมินระดับความน่าเชื่อถือ\n**ระดับความน่าเชื่อถือ:** ระดับ 1\n\nระบบดำเนินการระงับการเชื่อมต่อเพื่อป้องกันความปลอดภัยของอุปกรณ์ผู้ใช้"
         
         elif "ทะลวงระบบ" in news_content or "Error:" in news_content or "SOCIAL_BLOCKED" in news_content:
-            st.write("⚠️ ระบบความปลอดภัย: โซเชียลมีเดีย/เว็บไซต์ปฏิเสธการดึงข้อมูล")
-            result = f"## 📌 1. สรุปประเด็นสำคัญ\nเว็บไซต์มีระบบป้องกันบอท (Anti-Scraping) ที่เข้มงวด ทำให้เซิร์ฟเวอร์ Cloud ของเราไม่สามารถเข้าถึงข้อความได้\n\n## 📊 2. การประเมินระดับความน่าเชื่อถือ\n**ระดับความน่าเชื่อถือ:** N/A\n\n**ข้อแนะนำ:** กรุณาคัดลอกเนื้อหาหรือหัวข้อข่าว มาวางด้วยตนเองในแท็บ **'ตรวจสอบจากข้อความ'** ครับ"
+            st.write("⚠️ ระบบความปลอดภัย: ต้นทางปฏิเสธการดึงข้อมูล")
+            result = f"## 📌 1. สรุปประเด็นสำคัญ\nเว็บไซต์ต้นทางมีระบบป้องกันบอท หรือโพสต์ถูกตั้งเป็นส่วนตัว ทำให้ระบบไม่สามารถสกัดข้อความได้\n\n## 📊 2. การประเมินระดับความน่าเชื่อถือ\n**ระดับความน่าเชื่อถือ:** N/A\n\n**ข้อแนะนำ:** กรุณาคัดลอกเนื้อหาหรือหัวข้อข่าว มาวางด้วยตนเองในแท็บ **'ตรวจสอบจากข้อความ'** ครับ"
             
         elif news_content in ["LINK_UNSUPPORTED", "EMPTY_CONTENT"] or "ไม่สามารถดึงข้อมูล" in news_content:
             st.write("⚠️ เว็บไซต์ปลายทางปฏิเสธการเชื่อมต่อ")
