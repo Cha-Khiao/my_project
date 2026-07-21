@@ -16,7 +16,6 @@ except Exception:
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 def get_current_thai_time():
-    """ฟังก์ชันใหม่: สร้างบริบทเวลาปัจจุบันให้ AI รับรู้"""
     tz = pytz.timezone('Asia/Bangkok')
     now = datetime.now(tz)
     months_th = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
@@ -29,33 +28,23 @@ def clean_llm_output(text: str) -> str:
 
 def classify_content(news_text: str) -> tuple:
     text_chunk = news_text[:2500]
-    prompt = f"""คุณคือระบบ AI วิเคราะห์ประเภทเนื้อหาบนอินเทอร์เน็ต (Content Classifier)
-    หน้าที่ของคุณคือวิเคราะห์ว่าข้อความนี้ "จัดอยู่ในหมวดหมู่ใด" และ "ควรนำไปตรวจสอบข้อเท็จจริง (Fact-Check) หรือไม่"
-
-    [ข้อควรระวังสำคัญ]: ข้อความที่ส่งมาอาจเป็นเพียง "หัวข้อข่าว" หรือ "แคปชั่นสั้นๆ" (ยาว 1-3 บรรทัด) ห้ามปฏิเสธการวิเคราะห์เด็ดขาด ให้พยายามดึงใจความสำคัญเพื่อนำไปตรวจสอบเสมอ
-
+    prompt = f"""คุณคือระบบ AI วิเคราะห์ประเภทเนื้อหา
+    
     [หมวดหมู่เนื้อหา]
-    1. 📰 NEWS_AND_CLAIMS (ข่าวสารและคำกล่าวอ้าง): ข่าว, การเมือง, แจ้งเตือน, ภัยพิบัติ, คำกล่าวอ้างทางโซเชียล
-       ✅ ให้ตอบ: PROCEED
-    2. 🛒 CLASSIFIEDS_AND_ADS: ประกาศซื้อขายทั่วไป
-       ❌ ให้ตอบ: DROP
-    3. 💬 PERSONAL_POSTS: โพสต์บ่น, ไดอารี่ส่วนตัว
-       ❌ ให้ตอบ: DROP
-    4. 🎭 FICTION_AND_ENTERTAINMENT: เรื่องแต่ง, นิยาย
-       ❌ ให้ตอบ: DROP
-    5. ⚠️ SYSTEM_ERRORS: Error 404, Login page
-       ❌ ให้ตอบ: DROP
-    6. ❓ UNKNOWN_OR_HYBRID: ไม่แน่ใจ หรือเนื้อหากำกวม
-       ✅ ให้ตอบ: PROCEED
+    1. 📰 NEWS_AND_CLAIMS: ข่าว, คำกล่าวอ้าง, ประเด็นสังคม -> ตอบ: PROCEED
+    2. 🛒 CLASSIFIEDS_AND_ADS: ประกาศซื้อขายทั่วไป -> ตอบ: DROP
+    3. 💬 PERSONAL_POSTS: โพสต์ส่วนตัว -> ตอบ: DROP
+    4. 🎭 FICTION_AND_ENTERTAINMENT: เรื่องแต่ง -> ตอบ: DROP
+    5. ⚠️ SYSTEM_ERRORS: Error 404 -> ตอบ: DROP
+    6. ❓ UNKNOWN_OR_HYBRID: ไม่แน่ใจ -> ตอบ: PROCEED
 
     ข้อความที่ต้องพิจารณา:
     {text_chunk}
 
-    จงตอบกลับ 2 บรรทัดดังนี้เท่านั้น:
+    จงตอบกลับ 2 บรรทัดดังนี้เท่านั้น (ห้ามมีคำอื่นปน):
     RESULT: [PROCEED หรือ DROP]
     REASON: [เหตุผลภาษาไทยสั้นๆ]
     """
-    
     for attempt in range(3):
         try:
             response = requests.post(
@@ -63,23 +52,16 @@ def classify_content(news_text: str) -> tuple:
                 headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"},
                 data=json.dumps({
                     "model": "qwen/qwen-2.5-7b-instruct",
-                    "messages": [
-                        {"role": "system", "content": "You are a content classifier. You must output exactly two lines. Line 1: 'RESULT: PROCEED' or 'RESULT: DROP'. Line 2: 'REASON: [Thai reason]'."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    "temperature": 0.1
+                    "messages": [{"role": "system", "content": "Output exactly two lines."}, {"role": "user", "content": prompt}],
+                    "temperature": 0.0
                 }),
                 timeout=15
             )
             response.raise_for_status()
             raw_content = clean_llm_output(response.json()['choices'][0]['message']['content'])
-            
             match_result = re.search(r'RESULT\s*:\s*(PROCEED|DROP)', raw_content, re.IGNORECASE)
             match_reason = re.search(r'REASON\s*:\s*(.*)', raw_content, re.IGNORECASE)
-            
-            result_type = match_result.group(1).upper() if match_result else "PROCEED"
-            reason = match_reason.group(1).strip() if match_reason else "อนุญาตให้ตรวจสอบอัตโนมัติ"
-            return result_type, reason
+            return match_result.group(1).upper() if match_result else "PROCEED", match_reason.group(1).strip() if match_reason else "อนุญาตให้ตรวจสอบอัตโนมัติ"
         except Exception:
             if attempt == 2: return "PROCEED", "ระบบ API ล่าช้า ส่งเข้ากระบวนการตรวจสอบอัตโนมัติ"
             time.sleep(1.5)
@@ -87,14 +69,9 @@ def classify_content(news_text: str) -> tuple:
 def generate_search_keywords(news_text: str) -> str:
     text_chunk = news_text[:2500]
     prompt = f"""สกัด "กลุ่มคำค้นหา (Keywords)" จากเนื้อหาด้านล่าง เพื่อนำไปค้นหาความจริงใน Google
-    
     เนื้อหา:
     {text_chunk}
-
-    กฎ: 
-    1. สกัดเฉพาะ "ชื่อบุคคล", "สถานที่", "เหตุการณ์" หรือ "คีย์เวิร์ดสำคัญ"
-    2. ห้ามแปลเป็นภาษาอังกฤษ
-    3. ตอบแค่กลุ่มคำ 3-6 คำ เว้นวรรคระหว่างคำ
+    ตอบแค่กลุ่มคำ 3-6 คำ เว้นวรรคระหว่างคำ ห้ามแปลภาษา ห้ามมีคำอธิบาย
     """
     for attempt in range(3):
         try:
@@ -103,61 +80,66 @@ def generate_search_keywords(news_text: str) -> str:
                 headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"},
                 data=json.dumps({
                     "model": "qwen/qwen-2.5-7b-instruct",
-                    "messages": [
-                        {"role": "system", "content": "You are an SEO expert. Output ONLY THAI keywords. No explanations."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    "temperature": 0.1
+                    "messages": [{"role": "system", "content": "Output ONLY THAI keywords."}, {"role": "user", "content": prompt}],
+                    "temperature": 0.0
                 }),
                 timeout=15 
             )
             response.raise_for_status()
             keywords = clean_llm_output(response.json()['choices'][0]['message']['content'])
-            keywords = keywords.replace('"', '').replace("'", "").replace("**", "")
-            keywords = re.sub(r'^(คำค้นหา|คีย์เวิร์ด|Keywords?|Search Query)[\s\:\-]*', '', keywords, flags=re.IGNORECASE).strip()
+            keywords = re.sub(r'^(คำค้นหา|คีย์เวิร์ด|Keywords?|Search Query)[\s\:\-]*', '', keywords.replace('"', '').replace("'", "").replace("**", ""), flags=re.IGNORECASE).strip()
             return keywords
         except Exception:
             if attempt == 2: return ""
             time.sleep(1.5)
 
 def analyze_news_with_qwen(news_text: str, references: list, current_date: str) -> str:
-    # 🌟 สร้างระบบบริบทเวลาให้ AI รู้ว่าวันนี้คือวันอะไร
     current_time_context = get_current_thai_time()
     
-    ref_text = "\n".join([f"- {r['title']} (URL: {r['href']})" for r in references]) if references else "ไม่มีข้อมูลอ้างอิงจากสื่อหลักที่ตรงกับบริบท"
-    
-    prompt = f"""คุณคือ AI Fact-Checker ระดับโลก คุณต้องเป็นกลาง เด็ดขาด และรู้เท่าทันข้อมูล
-    
-    [บริบทเวลาปัจจุบันของคุณ]
-    🚨 {current_time_context}
-    คุณต้องใช้บริบทเวลานี้ เพื่อตรวจสอบคำว่า "วันนี้", "เมื่อวาน", "ล่าสุด" ในข้อความที่ถูกกล่าวอ้าง
-    หากข้อความกล่าวอ้างถึงเหตุการณ์ "วันนี้" แต่ข่าวอ้างอิงเป็นเรื่องของ "อดีต (เช่น ปีที่แล้ว)" ให้ถือว่าข้อมูลอ้างอิงนั้น "ไม่เกี่ยวข้องกัน" และอาจเป็นข่าวปลอมที่นำเรื่องเก่ามาเล่าใหม่
+    # 🌟 เก็บระบบอ้างอิงเวอร์ชันที่ดีที่สุดไว้ ดึง Snippet มาอ่านให้ได้ความ Real-time
+    ref_text_list = []
+    for r in references:
+        title = r.get('title', 'ไม่มีหัวข้อ')
+        link = r.get('href', 'ไม่มีลิงก์')
+        snippet = r.get('snippet', 'ไม่มีข้อมูลย่อ')
+        ref_text_list.append(f"- แหล่งที่มา: {link}\n  พาดหัวข่าว: {title}\n  เนื้อหาย่อ: {snippet}")
+        
+    ref_text = "\n".join(ref_text_list) if references else "ไม่มีข้อมูลค้นหาที่เกี่ยวข้อง"
 
+    prompt = f"""คุณคือ AI Fact-Checker ผู้ชาญฉลาด มีวิจารณญาณแบบมนุษย์ และรู้เท่าทันข้อมูลบิดเบือน
+
+    [บริบทเวลาปัจจุบัน]
+    🚨 {current_time_context}
+    
     [ข้อความที่ต้องตรวจสอบ]
     "{news_text}"
     
-    [ข้อมูลเปรียบเทียบจากสื่อหลัก (เพื่อใช้ตรวจสอบข้อความด้านบน)]
+    [ผลการสืบค้นจากอินเทอร์เน็ตล่าสุด]
     {ref_text}
     
     =========================================
-    🚨 กฎเหล็กขั้นเด็ดขาด (ห้ามฝ่าฝืน):
-    1. ความเชื่อมโยงของเวลา (Time Relevance): ข่าวอ้างอิงต้องเป็นเหตุการณ์ที่เกิดขึ้นในช่วงเวลาที่สอดคล้องกับข้อความกล่าวอ้าง หากข้อความบอกว่าเกิด "วันนี้" แต่ไม่มีข่าวอ้างอิงในวันนี้เลย ให้ถือว่าเป็น "ข่าวลือ/ข่าวปลอม"
-    2. ความตรงประเด็น (Factual Consistency): หากข้อความมีคีย์เวิร์ดที่เกินจริงอย่างชัดเจน (เช่น "ระเบิดนิวเคลียร์", "มนุษย์ต่างดาว", "ซอมบี้") และไม่มีสำนักข่าวหลักยืนยันสิ่งเหล่านั้น "ให้ตีตกเป็น ข่าวปลอม (ระดับ 1) ทันที" แม้ว่าบริบทอื่นในข่าว (เช่น ชื่อประเทศ) จะถูกต้องก็ตาม
-    3. การประเมินคะแนนที่เด็ดขาด:
-       - 🟢 ระดับ 5: ข้อมูลจริง 100% มีแหล่งข่าวหลักยืนยันตรงกันทุกประการ
-       - 🟡 ระดับ 4: ข้อมูลส่วนใหญ่เป็นจริง แต่อาจมีรายละเอียดเล็กน้อยที่คลาดเคลื่อน
-       - 🟠 ระดับ 3: ข้อมูลก้ำกึ่งมาก, ขาดข้อมูลสนับสนุนที่ชัดเจน, หรือเป็นเพียงความคิดเห็น/ข่าวลือที่ยังไม่ได้รับการยืนยัน
-       - 🔴 ระดับ 2: ข้อมูลเกินจริงไปมาก, นำข่าวเก่ามาปั่นกระแส, หรือมีแนวโน้มบิดเบือนสูง
-       - ❌ ระดับ 1 (ข่าวปลอม): ข้อมูลเป็นเท็จ 100%, ขัดแย้งกับหลักความเป็นจริงอย่างสิ้นเชิง (เช่น ไทยใช้ระเบิดนิวเคลียร์), เป็นเฟกนิวส์เพื่อสร้างความแตกตื่น
+    🚨 กฎการวิเคราะห์ข้อมูลแบบมนุษย์ (Contextual Understanding):
+    1. การเชื่อมโยงบริบท: ผลการสืบค้นอาจจะไม่ได้เขียนตรงกับข้อความที่ตรวจสอบเป๊ะๆ ให้คุณพิจารณา "ความเกี่ยวข้องแวดล้อม" (เช่น ข่าวลือบอกว่าใช้นิวเคลียร์รบกัน แต่ข่าวค้นหาเจอแค่การปะทะด้วยอาวุธปืนตามชายแดน) ให้คุณนำข่าวการปะทะนั้นมาอธิบายว่า "มีความขัดแย้งจริง แต่เรื่องนิวเคลียร์เป็นเรื่องบิดเบือน"
+    2. การจับโป๊ะ: หากข้อความมีเรื่องเกินจริง/เพ้อฝัน (เช่น อาวุธทำลายล้างที่ประเทศนั้นไม่มี) ให้ใช้หลักสามัญสำนึกตีตกเป็นข่าวปลอมหรือข่าวบิดเบือนทันที แม้จะมีชื่อประเทศหรือสถานที่ตรงกับข่าวจริงก็ตาม
     
-    ตอบกลับในรูปแบบ Markdown ตามโครงสร้างนี้เท่านั้น:
+    🚨 กฎการให้คะแนน (ห้ามแทงกั๊ก):
+    - 🟢 ระดับ 5 (95%): เป็นความจริง สื่อหลักยืนยันตรงกันอย่างชัดเจน
+    - 🟡 ระดับ 4 (75%): ส่วนใหญ่เป็นความจริง มีสื่อรายงานตรงกัน แต่อาจมีรายละเอียดเล็กน้อยผิดเพี้ยน
+    - 🟠 ระดับ 3 (50%): ก้ำกึ่ง ข้อมูลไม่เพียงพอจริงๆ (ใช้เมื่อไม่มีแม้แต่ข่าวแวดล้อมที่นำมาเชื่อมโยงได้)
+    - 🔴 ระดับ 2 (25%): ข้อมูลบิดเบือน (Misleading)! มีมูลความจริงบางส่วน (เช่น เกิดเหตุการณ์นั้นจริง) แต่ถูกนำมาแต่งเติมเนื้อหาให้เกินจริงไปมาก สร้างความตื่นตระหนก
+    - ❌ ระดับ 1 (10%): ข่าวปลอม 100%! ขัดแย้งกับหลักความเป็นจริงอย่างสิ้นเชิง และไม่มีสื่อใดรายงานเรื่องนี้เลย
+    
+    ⚠️ คำเตือนเรื่องรูปแบบ: 
+    บรรทัด "ระดับความน่าเชื่อถือ:" คุณต้องพิมพ์คำว่า "ระดับ " ตามด้วยตัวเลข 1, 2, 3, 4 หรือ 5 เท่านั้น
+
+    ตอบกลับในรูปแบบ Markdown ตามโครงสร้างนี้เป๊ะๆ:
     ## 📌 1. สรุปประเด็นสำคัญ
-    - (สรุปว่าข้อความกล่าวอ้างคืออะไร และความจริงที่พบคืออะไร)
+    - (สรุปเปรียบเทียบระหว่างข้อความกล่าวอ้าง กับความจริงที่อนุมานได้จากสื่ออ้างอิง)
     ## 📊 2. การประเมินระดับความน่าเชื่อถือ
-    **ระดับความน่าเชื่อถือ:** [ระบุระดับ 1-5 ตามกฎด้านบน]
-    **เหตุผลประกอบการประเมิน:** (อธิบายเหตุผลโดยอิงจากความสอดคล้องของเวลา และความขัดแย้งของเหตุการณ์)
+    **ระดับความน่าเชื่อถือ:** ระดับ [ตัวเลข 1 ถึง 5]
+    **เหตุผลประกอบการประเมิน:** (อธิบายอย่างชาญฉลาด โดยนำข่าวที่ค้นพบมาเชื่อมโยง เพื่อหักล้างหรือสนับสนุนข้อความนั้น)
     ## 🔗 3. แหล่งอ้างอิง
-    - (ใส่แหล่งอ้างอิงที่เกี่ยวข้อง หากไม่มีให้เขียนว่า "ไม่พบข้อมูลอ้างอิงจากสื่อหลักที่เชื่อถือได้")
+    - (นำรายชื่อเว็บไซต์หรือพาดหัวข่าวที่ใกล้เคียงมาแสดง เพื่อให้ผู้อ่านเห็นว่า AI นำข่าวไหนมาประเมิน)
     """
     for attempt in range(3):
         try:
@@ -167,10 +149,10 @@ def analyze_news_with_qwen(news_text: str, references: list, current_date: str) 
                 data=json.dumps({
                     "model": "qwen/qwen-2.5-7b-instruct",
                     "messages": [
-                        {"role": "system", "content": "You are a ruthless Fact-Checker. You detect fake news, outdated news reused as fresh, and illogical claims. You MUST respond in THAI. Start with '## 📌 1.'"},
+                        {"role": "system", "content": "You are a smart, context-aware Fact-Checker. You connect related news to debunk fake aspects of a claim. Output exact Markdown."},
                         {"role": "user", "content": prompt}
                     ],
-                    "temperature": 0.1 
+                    "temperature": 0.0 
                 }),
                 timeout=30
             )
@@ -178,5 +160,5 @@ def analyze_news_with_qwen(news_text: str, references: list, current_date: str) 
             return clean_llm_output(response.json()['choices'][0]['message']['content'])
         except Exception as e:
             if attempt == 2:
-                return f"### ❌ เกิดข้อผิดพลาด: เซิร์ฟเวอร์ AI ขัดข้องหรือตอบสนองช้าเกินไป โปรดทดสอบใหม่อีกครั้ง"
+                return f"## 📌 1. สรุปประเด็นสำคัญ\nเกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์ AI\n## 📊 2. การประเมินระดับความน่าเชื่อถือ\n**ระดับความน่าเชื่อถือ:** ระดับ 3\n**เหตุผลประกอบการประเมิน:** เซิร์ฟเวอร์ไม่ตอบสนอง กรุณาลองใหม่อีกครั้ง\n## 🔗 3. แหล่งอ้างอิง\n- ไม่มี"
             time.sleep(2)
