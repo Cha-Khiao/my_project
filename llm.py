@@ -47,14 +47,15 @@ def classify_content(news_text: str) -> tuple:
     """
     for attempt in range(3):
         try:
-            # 🛠️ แก้ไข URL ที่พิมพ์ผิด (openopenrouter) เป็น openrouter.ai เรียบร้อยครับ
             response = requests.post(
                 url="https://openrouter.ai/api/v1/chat/completions",
                 headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"},
                 data=json.dumps({
                     "model": "qwen/qwen-2.5-7b-instruct",
                     "messages": [{"role": "system", "content": "Output exactly two lines."}, {"role": "user", "content": prompt}],
-                    "temperature": 0.0
+                    "temperature": 0.0,
+                    "top_p": 0.1,
+                    "seed": 42
                 }),
                 timeout=15
             )
@@ -69,10 +70,10 @@ def classify_content(news_text: str) -> tuple:
 
 def generate_search_keywords(news_text: str) -> str:
     text_chunk = news_text[:2500]
-    prompt = f"""สกัด "กลุ่มคำค้นหา (Keywords)" จากเนื้อหาด้านล่าง เพื่อนำไปค้นหาความจริงใน Google
+    prompt = f"""สกัด "คำสำคัญ (Keywords)" จากเนื้อหาด้านล่าง เพื่อนำไปค้นหาความจริงใน Google
     เนื้อหา:
     {text_chunk}
-    ตอบแค่กลุ่มคำ 3-6 คำ เว้นวรรคระหว่างคำ ห้ามแปลภาษา ห้ามมีคำอธิบาย
+    กฎ: ตอบแค่กลุ่มคำ 3-5 คำ (เว้นวรรค) เน้นเฉพาะ "ชื่อบุคคล", "สถานที่" หรือ "เหตุการณ์หลัก" เท่านั้น ห้ามแปลภาษาและห้ามมีคำอธิบาย
     """
     for attempt in range(3):
         try:
@@ -82,7 +83,9 @@ def generate_search_keywords(news_text: str) -> str:
                 data=json.dumps({
                     "model": "qwen/qwen-2.5-7b-instruct",
                     "messages": [{"role": "system", "content": "Output ONLY THAI keywords."}, {"role": "user", "content": prompt}],
-                    "temperature": 0.0
+                    "temperature": 0.0,
+                    "top_p": 0.1,
+                    "seed": 42
                 }),
                 timeout=15 
             )
@@ -106,27 +109,25 @@ def analyze_news_with_qwen(news_text: str, references: list, current_date: str) 
         
     ref_text = "\n".join(ref_text_list) if references else "ไม่มีข้อมูลค้นหาที่เกี่ยวข้องเลย"
 
-    prompt = f"""คุณคือ AI Fact-Checker หน้าที่ของคุณคือฟันธงความจริงด้วยหลักตรรกะและเหตุผลที่เป็นกลาง
+    prompt = f"""คุณคือ AI Fact-Checker หน้าที่ของคุณคือวิเคราะห์ความน่าเชื่อถือด้วยความเข้มงวดและเป็นกลาง ห้ามจินตนาการข้อมูลเองเด็ดขาด
 
     [บริบทเวลาปัจจุบัน]
-    🚨 {current_time_context}
+    🚨 {current_time_context} (ใช้เพื่อตรวจสอบว่าข้อความอ้างอิงถึงเหตุการณ์เก่า หรือนำข่าวเก่ามาเล่าใหม่หรือไม่)
     
     [ข้อความที่ต้องตรวจสอบ]
     "{news_text}"
     
-    [ผลการสืบค้นจากอินเทอร์เน็ต (พาดหัวข่าวและเนื้อหาย่อ)]
+    [ผลการสืบค้นจากอินเทอร์เน็ต]
     {ref_text}
     
     =========================================
-    🚨 กฎการประเมินและให้คะแนน (คิดให้รอบคอบก่อนตัดสินใจ):
+    🚨 กฎการประเมิน (เคร่งครัดมาก):
     
-    - 🟢 ระดับ 5 (95%): ข่าวจริงชัวร์! มีแหล่งอ้างอิงจากสื่อหลักยืนยันเหตุการณ์ตรงกันอย่างชัดเจน
-    - 🟡 ระดับ 4 (75%): ความจริงส่วนใหญ่สอดคล้องกับสื่อหลัก แต่อาจมีรายละเอียดเล็กน้อยหรือตัวเลขที่คาดเคลื่อน
-    - 🟠 ระดับ 3 (50%): ข้อมูลไม่เพียงพอ! ใช้ในกรณีที่เป็น "ข่าวทั่วไป" หรือ "เรื่องระดับท้องถิ่น" ที่ยังหาแหล่งอ้างอิงจากสื่อหลักไม่พบ (ห้ามตีเป็นข่าวปลอม หากไม่ใช่เรื่องเพ้อฝัน)
-    - 🔴 ระดับ 2 (25%): ข้อมูลบิดเบือน นำข่าวเก่ามาปั่นกระแสให้คนเข้าใจผิดว่าเป็นเรื่องปัจจุบัน 
-    - ❌ ระดับ 1 (10%): ข่าวปลอม 100%! ใช้เฉพาะกรณีที่: 
-        1. ขัดแย้งกับหลักความเป็นจริงอย่างรุนแรง (เช่น ไทยใช้นิวเคลียร์, ซอมบี้)
-        2. เป็นเหตุการณ์ระดับชาติหรือระดับโลกที่ "ถ้าจริงต้องเป็นข่าวใหญ่" แต่กลับหาในกูเกิลไม่เจอเลย
+    - 🟢 ระดับ 5 (95%): มีหลักฐานจากสื่อหลักยืนยันเหตุการณ์ตรงกัน และ "เวลา" สอดคล้องกับปัจจุบัน
+    - 🟡 ระดับ 4 (75%): ความจริงส่วนใหญ่สอดคล้องกับสื่อหลัก แต่อาจคลาดเคลื่อนเรื่องตัวเลขหรือรายละเอียดเล็กน้อย
+    - 🟠 ระดับ 3 (50%): "ข้อมูลไม่เพียงพอ" หากผลการสืบค้นที่ให้ไปไม่มีเนื้อหาตรงกับข้อความเลย (ห้ามนำความรู้เดิมมาตอบ ให้ตัดสินจากผลการสืบค้นเท่านั้น)
+    - 🔴 ระดับ 2 (25%): ข้อมูลบิดเบือน นำข่าวเก่ามาปั่นกระแสให้คนเข้าใจผิด หรือตัดต่อบริบท
+    - ❌ ระดับ 1 (10%): ข่าวปลอม ขัดแย้งกับหลักความเป็นจริงอย่างชัดเจน 
     
     ⚠️ คำเตือนเรื่องรูปแบบ: 
     บรรทัด "ระดับความน่าเชื่อถือ:" คุณต้องพิมพ์คำว่า "ระดับ " ตามด้วยตัวเลข 1, 2, 3, 4 หรือ 5 เท่านั้น ห้ามมีคำอื่น
@@ -151,7 +152,9 @@ def analyze_news_with_qwen(news_text: str, references: list, current_date: str) 
                         {"role": "system", "content": "You are a balanced and logical Fact-Checker. You evaluate evidence fairly without defaulting entirely to Level 1 or Level 3 unneccessarily. Output exact Markdown."},
                         {"role": "user", "content": prompt}
                     ],
-                    "temperature": 0.0 
+                    "temperature": 0.0,
+                    "top_p": 0.1,
+                    "seed": 42
                 }),
                 timeout=30
             )

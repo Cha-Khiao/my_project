@@ -41,7 +41,6 @@ st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;500;600;700&display=swap');
     
-    /* 🛠️ แก้ไขแล้ว: เอาแท็ก span ออกจากการบังคับฟอนต์ เพื่อไม่ให้ทับไอคอน check ของ Streamlit */
     h1, h2, h3, h4, h5, h6, p, a, button, input, textarea, label, li { 
         font-family: 'Prompt', sans-serif !important; 
     }
@@ -253,8 +252,8 @@ with tab1:
         if url_input:
             input_method_used = "URL Link"
             
-            # 🛠️ [จุดที่แก้ไข] ปรับ Regex ให้รองรับภาษาไทยใน URL จากมือถือได้แล้ว
-            url_match = re.search(r'(https?://[^\s\n\r<>]+)', url_input)
+            # 🛠️ [แก้ไขใหม่] Regex ครอบคลุมลิงก์มือถือที่มีอักขระแปลกๆ และลบวรรคตอนท้ายสุดออก
+            url_match = re.search(r'(https?://[a-zA-Z0-9./?=_%&+\-#]+)', url_input)
             clean_url = url_match.group(1).rstrip('.,;!?)\'"]') if url_match else url_input.strip()
             
             if any(re.search(pattern, clean_url.lower()) for pattern in VIDEO_PATTERNS):

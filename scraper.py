@@ -14,41 +14,54 @@ except ImportError:
 
 def clean_mobile_url(url: str) -> str:
     url = unquote(url.strip())
-    if url.endswith('#'):
-        url = url[:-1]
+    
+    # 1. จัดการลิงก์จาก Facebook l.php (กรณีคลิกผ่านแอป)
     if "l.facebook.com/l.php?u=" in url:
         try:
             url = unquote(url.split("u=")[1].split("&")[0])
         except Exception:
             pass
             
+    # 2. แปลง Mobile URL ให้เป็น Desktop URL
     url = url.replace("://m.facebook.com", "://www.facebook.com")
     url = url.replace("://mobile.twitter.com", "://twitter.com")
+    url = url.replace("://x.com", "://twitter.com")
     
+    # 3. ล้าง Parameter ขยะที่แถมมากับแอปมือถือ
     if "?" in url:
         base_url, query_str = url.split("?", 1)
         fragment = ""
+        
         if "#" in query_str:
             query_str, fragment = query_str.split("#", 1)
-            fragment = "#" + fragment
-            
+            if fragment: 
+                fragment = "#" + fragment
+                
         params = query_str.split("&")
+        
+        junk_params = (
+            'mibextid=', 'igsh=', 'si=', 'fbclid=', 'is_from_webapp=', 
+            'h=', 's=', 't=', 'rdid=', 'share_url=', 'utm_', 'c='
+        )
+        
         clean_params = [
             p for p in params 
-            if not p.lower().startswith(('mibextid=', 'igsh=', 'si=', 'fbclid=', 'is_from_webapp=', 'h=', 's=', 't=', 'rdid=', 'share_url=', 'utm_'))
+            if not p.lower().startswith(junk_params)
         ]
         
         if clean_params:
             url = f"{base_url}?{'&'.join(clean_params)}{fragment}"
         else:
             url = f"{base_url}{fragment}"
+            
+    # 4. ล้าง # ท้ายลิงก์ทิ้ง 
+    url = url.rstrip('#')
     return url
 
 def resolve_facebook_redirects(url: str) -> str:
     if "facebook.com/share/" not in url.lower() and "fb.watch" not in url.lower():
         return url
     try:
-        # 🚀 ใช้ impersonate="chrome" เพื่อให้ Facebook มองเป็นคนจริงๆ
         res = requests.get(url, impersonate="chrome", timeout=10, allow_redirects=True)
         if "login" in res.url.lower():
             parsed = urlparse(res.url)
@@ -72,7 +85,7 @@ def resolve_facebook_redirects(url: str) -> str:
 
     try:
         proxy_url = f"https://api.allorigins.win/get?url={quote(url)}"
-        res_proxy = requests.get(proxy_url, impersonate="chrome", timeout=15)
+        res_proxy = requests.get(proxy_url, impersonate="chrome", timeout=10)
         if res_proxy.status_code == 200:
             data = res_proxy.json()
             final_url = data.get("status", {}).get("url", url)
@@ -90,7 +103,7 @@ def expand_url(url: str) -> str:
     redirectors = ['shorturl.', 'bit.ly', 'tinyurl.', 't.co', 'cutt.ly', 'rebrand.ly', 'lnkd.in', 'vt.tiktok.com', 'vm.tiktok.com', 'youtu.be', 'line.me', 'liff.line.me']
     if any(r in url.lower() for r in redirectors):
         try:
-            res = requests.get(url, impersonate="safari", allow_redirects=True, timeout=12)
+            res = requests.get(url, impersonate="safari", allow_redirects=True, timeout=10)
             final_url = res.url
             meta_match = re.search(r'http-equiv=["\']?refresh["\']?[^>]*url=["\']?([^"\'>]+)["\']?', res.text, re.IGNORECASE)
             if meta_match: 
@@ -127,7 +140,7 @@ def extract_social_metadata(url: str) -> str:
                 shortcode = match.group(1)
                 embed_url = f"https://www.instagram.com/p/{shortcode}/embed/captioned/"
                 try:
-                    res = requests.get(embed_url, impersonate="chrome", timeout=12)
+                    res = requests.get(embed_url, impersonate="chrome", timeout=10)
                     if res.status_code == 200:
                         soup = BeautifulSoup(res.text, 'html.parser')
                         caption_div = soup.find(class_='Caption')
@@ -147,7 +160,7 @@ def extract_social_metadata(url: str) -> str:
                 if match_path:
                     clean_path = match_path.group(1).split('?')[0]
                     ig_proxy_url = "https://ddinstagram.com" + clean_path
-                    response = requests.get(ig_proxy_url, impersonate="chrome", timeout=12)
+                    response = requests.get(ig_proxy_url, impersonate="chrome", timeout=10)
                     if response.status_code == 200:
                         soup = BeautifulSoup(response.text, 'html.parser')
                         og_title = soup.find("meta", property="og:title") or soup.find("meta", attrs={"name": "og:title"})
@@ -190,7 +203,7 @@ def extract_social_metadata(url: str) -> str:
             # ท่าที่ 2 & 3: ใช้ curl_cffi ดึง Meta ตรงๆ (ทะลุบล็อกได้ดีขึ้น)
             if not fb_text:
                 try:
-                    meta_res = requests.get(clean_url, impersonate="chrome", timeout=15, allow_redirects=True)
+                    meta_res = requests.get(clean_url, impersonate="chrome", timeout=10, allow_redirects=True)
                     meta_res.encoding = 'utf-8'
                     soup_meta = BeautifulSoup(meta_res.text, 'html.parser')
 
@@ -217,7 +230,7 @@ def extract_social_metadata(url: str) -> str:
                 
             return f"โพสต์จาก Facebook {method_used}:\n{fb_text}"
 
-        response = requests.get(url, impersonate="chrome", timeout=15)
+        response = requests.get(url, impersonate="chrome", timeout=10)
         soup = BeautifulSoup(response.text, 'html.parser')
         
         og_title = soup.find("meta", property="og:title") or soup.find("meta", attrs={"name": "og:title"})
@@ -234,7 +247,7 @@ def extract_social_metadata(url: str) -> str:
 def force_extract_news_link(social_url: str) -> str:
     if "x.com" in social_url.lower() or "twitter.com" in social_url.lower(): return ""
     try:
-        response = requests.get(social_url, impersonate="chrome", timeout=15, allow_redirects=True)
+        response = requests.get(social_url, impersonate="chrome", timeout=10, allow_redirects=True)
         decoded_html = unquote(response.text)
         whitelist = ['thairath.co.th', 'khaosod.co.th', 'matichon.co.th', 'dailynews.co.th', 'sanook.com', 'prachachat.net', 'bangkokbiznews.com', 'mgronline.com', 'thaipbs.or.th', 'pptvhd36.com', 'ch7.com', 'thestandard.co', 'workpointtoday.com', 'amarintv.com', 'nationtv.tv', 'tnnthailand.com', 'springnews.co.th']
         domain_pattern = "|".join([d.replace('.', r'\.') for d in whitelist])
@@ -252,8 +265,8 @@ def fetch_with_fallback(url: str) -> str:
     anti_bot_patterns = r'(cloudflare|500 internal server error|403 forbidden|access denied|captcha|not acceptable|checking your browser|security check|just a moment|log in to facebook|เข้าสู่ระบบ|error 404|page not found|ไม่พบหน้านี้|content not found)'
     
     try:
-        # 🚀 พระเอกอยู่ตรงนี้: ใช้ curl_cffi เจาะ Cloudflare ของเว็บข่าว 
-        res = requests.get(url, impersonate="chrome", timeout=15, allow_redirects=True)
+        # 🚀 ปรับลด Timeout จาก 15 เหลือ 8 เพื่อสปีดระบบ
+        res = requests.get(url, impersonate="chrome", timeout=8, allow_redirects=True)
         if res.status_code == 200:
             if res.encoding is None or res.encoding.lower() == 'iso-8859-1':
                 res.encoding = res.apparent_encoding or 'utf-8'
@@ -268,9 +281,9 @@ def fetch_with_fallback(url: str) -> str:
         pass
 
     try:
-        # 🛡️ Jina Reader ยังเก็บไว้เป็นไม้ตายสำรอง 
+        # 🛡️ ปรับลด Timeout จาก 20 เหลือ 10
         jina_url = f"https://r.jina.ai/{url}"
-        response = requests.get(jina_url, impersonate="chrome", headers={"Accept": "text/plain", "X-Retain-Images": "none"}, timeout=20)
+        response = requests.get(jina_url, impersonate="chrome", headers={"Accept": "text/plain", "X-Retain-Images": "none"}, timeout=10)
         if response.status_code == 200:
             content = response.text
             if len(content.strip()) > 100 and not re.search(anti_bot_patterns, content, re.IGNORECASE): 
