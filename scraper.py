@@ -2,11 +2,8 @@ import os
 import re
 from bs4 import BeautifulSoup
 from urllib.parse import unquote, quote, urlparse, parse_qs
-
-# 🌟 เปลี่ยนจาก requests ธรรมดา เป็น curl_cffi เพื่อปลอมตัวเป็นเบราว์เซอร์
 from curl_cffi import requests
 
-# ดึง Streamlit อย่างปลอดภัย
 try:
     import streamlit as st
 except ImportError:
@@ -15,19 +12,16 @@ except ImportError:
 def clean_mobile_url(url: str) -> str:
     url = unquote(url.strip())
     
-    # 1. จัดการลิงก์จาก Facebook l.php (กรณีคลิกผ่านแอป)
     if "l.facebook.com/l.php?u=" in url:
         try:
             url = unquote(url.split("u=")[1].split("&")[0])
         except Exception:
             pass
             
-    # 2. แปลง Mobile URL ให้เป็น Desktop URL
     url = url.replace("://m.facebook.com", "://www.facebook.com")
     url = url.replace("://mobile.twitter.com", "://twitter.com")
     url = url.replace("://x.com", "://twitter.com")
     
-    # 3. ล้าง Parameter ขยะที่แถมมากับแอปมือถือ
     if "?" in url:
         base_url, query_str = url.split("?", 1)
         fragment = ""
@@ -54,7 +48,6 @@ def clean_mobile_url(url: str) -> str:
         else:
             url = f"{base_url}{fragment}"
             
-    # 4. ล้าง # ท้ายลิงก์ทิ้ง 
     url = url.rstrip('#')
     return url
 
@@ -62,20 +55,14 @@ def resolve_facebook_redirects(url: str) -> str:
     if "facebook.com/share/" not in url.lower() and "fb.watch" not in url.lower():
         return url
     try:
-        # 💡 เพิ่ม Headers ปลอมตัวเป็น iPhone เพื่อให้ Facebook ยอมปล่อย Redirect ออกมา
-        headers = {
-            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
-        }
-        res = requests.get(url, impersonate="chrome", headers=headers, timeout=10, allow_redirects=True)
+        res = requests.get(url, impersonate="chrome", timeout=10, allow_redirects=True)
         
-        # 💡 ท่าที่ 1: เช็ค Meta Refresh (เป็นท่าที่ Facebook ชอบใช้ซ่อน URL จริง)
         meta_match = re.search(r'http-equiv=["\']?refresh["\']?[^>]*url=["\']?([^"\'>]+)["\']?', res.text, re.IGNORECASE)
         if meta_match:
             refresh_url = meta_match.group(1).replace('&amp;', '&')
             if "facebook.com/share/" not in refresh_url.lower() and "login" not in refresh_url.lower():
                 return refresh_url
 
-        # 💡 ท่าที่ 2: เช็ค Javascript Redirect
         js_match = re.search(r'window\.location\.(?:replace|href)\s*=\s*["\'](.*?)["\']', res.text, re.IGNORECASE)
         if js_match:
             js_url = js_match.group(1).replace('\\/', '/')
@@ -137,7 +124,6 @@ def expand_url(url: str) -> str:
 
 def extract_social_metadata(url: str) -> str:
     try:
-        # --- X (Twitter) ---
         if "x.com/" in url or "twitter.com/" in url:
             match = re.search(r'(?:x|twitter)\.com(/.*)', url)
             if match:
@@ -152,7 +138,6 @@ def extract_social_metadata(url: str) -> str:
                 else:
                     return f"Error: API ของ X ปฏิเสธการดึงข้อมูล ({res.status_code})"
 
-        # --- Instagram ---
         elif "instagram.com/" in url:
             match = re.search(r'instagram\.com/(?:p|reel|tv)/([^/?]+)', url)
             if match:
@@ -199,54 +184,62 @@ def extract_social_metadata(url: str) -> str:
             clean_url = url
             method_used = "" 
 
-            # ท่าที่ 1: ดึงผ่าน Iframe
+            # 💡 ท่าไม้ตาย: ปลอมตัวเป็นระบบ Preview ของแอปแชท (WhatsApp/LINE) 
+            # Facebook จะยอมคายเนื้อหาโพสต์เต็มๆ ออกมาในรูปแบบ og:description ให้กับบอทนี้เสมอ
             try:
-                embed_url = f"https://www.facebook.com/plugins/post.php?href={quote(clean_url)}&show_text=true"
-                res_embed = requests.get(embed_url, impersonate="chrome", timeout=10)
+                bot_headers = {
+                    "User-Agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
+                    "Accept-Language": "th-TH,th;q=0.9,en;q=0.8",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+                }
+                # สังเกตว่าเราไม่ตั้งค่า impersonate="chrome" เพื่อบังคับให้ส่ง Header เป็นบอทจริงๆ
+                meta_res = requests.get(clean_url, headers=bot_headers, timeout=10, allow_redirects=True)
+                meta_res.encoding = 'utf-8'
+                soup_meta = BeautifulSoup(meta_res.text, 'html.parser')
+
+                og_title = soup_meta.find("meta", property="og:title") or soup_meta.find("meta", attrs={"name": "og:title"})
+                og_desc = soup_meta.find("meta", property="og:description") or soup_meta.find("meta", attrs={"name": "og:description"})
                 
-                if res_embed.status_code == 200:
-                    soup_embed = BeautifulSoup(res_embed.text, 'html.parser')
-                    for element in soup_embed(["script", "style", "form", "button"]): 
-                        element.extract()
-                        
-                    extracted = soup_embed.get_text(separator=' ', strip=True)
-                    
-                    if extracted and not re.search(r'(log in to facebook|เข้าสู่ระบบ|error 404|content not found|ไม่พบเนื้อหา)', extracted, re.IGNORECASE):
-                        extracted = re.sub(r'(เข้าสู่ระบบ|ลืมรหัสผ่าน|Log In|Sign Up).*', '', extracted, flags=re.IGNORECASE).strip()
-                        if len(extracted) >= 5:
-                            fb_text = extracted
-                            method_used = "[ดึงด้วย: FB Embed Iframe 🌐]"
+                title = og_title["content"] if og_title else ""
+                desc = og_desc["content"] if og_desc else ""
+                
+                combined = f"{title}\n{desc}".strip()
+                
+                # ล้างข้อความขยะระบบของ Facebook ที่มักติดมาตอนดึงข้อมูล
+                combined = re.sub(r'(ดูโพสต์เพิ่มเติมจาก|เข้าสู่ระบบ|ลืมรหัสผ่าน|หาเพื่อนบน Facebook|บน Facebook|Log In|Sign Up).*', '', combined, flags=re.IGNORECASE).strip()
+
+                if combined and not re.search(r'(log in to facebook|เข้าสู่ระบบ|error 404|ไม่พบเนื้อหา)', combined, re.IGNORECASE):
+                    if combined.lower() not in ["facebook", "facebook app", "meta"]:
+                        if len(combined) >= 10:
+                            fb_text = combined
+                            method_used = "[ดึงด้วย: WhatsApp/LINE Preview Bot 🚀]"
             except Exception:
                 pass
 
-            # ท่าที่ 2 & 3: ใช้ curl_cffi ดึง Meta ตรงๆ (ทะลุบล็อกได้ดีขึ้น)
+            # ท่าสำรอง: ดึงผ่าน Iframe
             if not fb_text:
                 try:
-                    meta_res = requests.get(clean_url, impersonate="chrome", timeout=10, allow_redirects=True)
-                    meta_res.encoding = 'utf-8'
-                    soup_meta = BeautifulSoup(meta_res.text, 'html.parser')
-
-                    og_title = soup_meta.find("meta", property="og:title") or soup_meta.find("meta", attrs={"name": "og:title"})
-                    og_desc = soup_meta.find("meta", property="og:description") or soup_meta.find("meta", attrs={"name": "og:description"})
+                    embed_url = f"https://www.facebook.com/plugins/post.php?href={quote(clean_url)}&show_text=true"
+                    res_embed = requests.get(embed_url, impersonate="chrome", timeout=10)
                     
-                    title = og_title["content"] if og_title else ""
-                    desc = og_desc["content"] if og_desc else ""
-                    combined = f"{title}\n{desc}".strip()
-                    combined = re.sub(r'(ดูโพสต์เพิ่มเติมจาก|เข้าสู่ระบบ|ลืมรหัสผ่าน|หาเพื่อนบน Facebook|บน Facebook|Log In|Sign Up).*', '', combined, flags=re.IGNORECASE).strip()
-
-                    if combined and not re.search(r'(log in to facebook|เข้าสู่ระบบ|error 404|ไม่พบเนื้อหา)', combined, re.IGNORECASE):
-                        if len(combined) >= 5:
-                            fb_text = combined
-                            method_used = "[ดึงด้วย: Chrome Impersonation 🤖]"
+                    if res_embed.status_code == 200:
+                        soup_embed = BeautifulSoup(res_embed.text, 'html.parser')
+                        for element in soup_embed(["script", "style", "form", "button"]): 
+                            element.extract()
+                            
+                        extracted = soup_embed.get_text(separator=' ', strip=True)
+                        
+                        if extracted and not re.search(r'(log in to facebook|เข้าสู่ระบบ|error 404|content not found|ไม่พบเนื้อหา)', extracted, re.IGNORECASE):
+                            extracted = re.sub(r'(เข้าสู่ระบบ|ลืมรหัสผ่าน|Log In|Sign Up).*', '', extracted, flags=re.IGNORECASE).strip()
+                            if len(extracted) >= 5:
+                                fb_text = extracted
+                                method_used = "[ดึงด้วย: FB Embed Iframe 🌐]"
                 except Exception:
                     pass
 
             if not fb_text or re.search(r'(log in to facebook|เข้าสู่ระบบ|error 404|page not found|ไม่พบเนื้อหา)', fb_text, re.IGNORECASE):
                 return "Error: Facebook บล็อกเนื้อหา (อาจเป็นโพสต์กลุ่มปิด หรือถูกตั้งเป็นส่วนตัว)"
             
-            elif len(fb_text) < 5: 
-                return "Error: ไม่มีเนื้อหาข้อความในโพสต์"
-                
             return f"โพสต์จาก Facebook {method_used}:\n{fb_text}"
 
         response = requests.get(url, impersonate="chrome", timeout=10)
@@ -281,7 +274,6 @@ def force_extract_news_link(social_url: str) -> str:
         return ""
 
 def fetch_with_fallback(url: str) -> str:
-    # 💡 เพิ่มคีย์เวิร์ดของ 404 ให้แน่นหนาขึ้น ป้องกันไม่ให้ข้อความขยะนี้หลุดรอดไปถึง AI
     anti_bot_patterns = r'(cloudflare|500 internal server error|403 forbidden|access denied|captcha|not acceptable|checking your browser|security check|just a moment|log in to facebook|เข้าสู่ระบบ|error 404|404 not found|page not found|ไม่พบหน้านี้|ไม่พบเนื้อหา|content not found|this page isn\'t available|หน้านี้ไม่พร้อมใช้งาน|อาจเสียหรือถูกลบไปแล้ว)'
     
     try:
@@ -312,7 +304,6 @@ def fetch_with_fallback(url: str) -> str:
     return ""
 
 def extract_text_from_url(url: str) -> dict:
-    """ศูนย์กลางสกัดข้อมูล"""
     try:
         url = clean_mobile_url(url)
         url = resolve_facebook_redirects(url) 
