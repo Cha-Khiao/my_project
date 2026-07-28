@@ -62,7 +62,26 @@ def resolve_facebook_redirects(url: str) -> str:
     if "facebook.com/share/" not in url.lower() and "fb.watch" not in url.lower():
         return url
     try:
-        res = requests.get(url, impersonate="chrome", timeout=10, allow_redirects=True)
+        # 💡 เพิ่ม Headers ปลอมตัวเป็น iPhone เพื่อให้ Facebook ยอมปล่อย Redirect ออกมา
+        headers = {
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
+        }
+        res = requests.get(url, impersonate="chrome", headers=headers, timeout=10, allow_redirects=True)
+        
+        # 💡 ท่าที่ 1: เช็ค Meta Refresh (เป็นท่าที่ Facebook ชอบใช้ซ่อน URL จริง)
+        meta_match = re.search(r'http-equiv=["\']?refresh["\']?[^>]*url=["\']?([^"\'>]+)["\']?', res.text, re.IGNORECASE)
+        if meta_match:
+            refresh_url = meta_match.group(1).replace('&amp;', '&')
+            if "facebook.com/share/" not in refresh_url.lower() and "login" not in refresh_url.lower():
+                return refresh_url
+
+        # 💡 ท่าที่ 2: เช็ค Javascript Redirect
+        js_match = re.search(r'window\.location\.(?:replace|href)\s*=\s*["\'](.*?)["\']', res.text, re.IGNORECASE)
+        if js_match:
+            js_url = js_match.group(1).replace('\\/', '/')
+            if "facebook.com/share/" not in js_url.lower() and "login" not in js_url.lower():
+                return js_url
+
         if "login" in res.url.lower():
             parsed = urlparse(res.url)
             qs = parse_qs(parsed.query)
@@ -262,10 +281,10 @@ def force_extract_news_link(social_url: str) -> str:
         return ""
 
 def fetch_with_fallback(url: str) -> str:
-    anti_bot_patterns = r'(cloudflare|500 internal server error|403 forbidden|access denied|captcha|not acceptable|checking your browser|security check|just a moment|log in to facebook|เข้าสู่ระบบ|error 404|page not found|ไม่พบหน้านี้|content not found)'
+    # 💡 เพิ่มคีย์เวิร์ดของ 404 ให้แน่นหนาขึ้น ป้องกันไม่ให้ข้อความขยะนี้หลุดรอดไปถึง AI
+    anti_bot_patterns = r'(cloudflare|500 internal server error|403 forbidden|access denied|captcha|not acceptable|checking your browser|security check|just a moment|log in to facebook|เข้าสู่ระบบ|error 404|404 not found|page not found|ไม่พบหน้านี้|ไม่พบเนื้อหา|content not found|this page isn\'t available|หน้านี้ไม่พร้อมใช้งาน|อาจเสียหรือถูกลบไปแล้ว)'
     
     try:
-        # 🚀 ปรับลด Timeout จาก 15 เหลือ 8 เพื่อสปีดระบบ
         res = requests.get(url, impersonate="chrome", timeout=8, allow_redirects=True)
         if res.status_code == 200:
             if res.encoding is None or res.encoding.lower() == 'iso-8859-1':
@@ -281,7 +300,6 @@ def fetch_with_fallback(url: str) -> str:
         pass
 
     try:
-        # 🛡️ ปรับลด Timeout จาก 20 เหลือ 10
         jina_url = f"https://r.jina.ai/{url}"
         response = requests.get(jina_url, impersonate="chrome", headers={"Accept": "text/plain", "X-Retain-Images": "none"}, timeout=10)
         if response.status_code == 200:
