@@ -54,55 +54,50 @@ def clean_mobile_url(url: str) -> str:
 def resolve_facebook_redirects(url: str) -> str:
     if "facebook.com/share/" not in url.lower() and "fb.watch" not in url.lower():
         return url
+    
+    # 💡 ท่าที่ 1: อ้างตัวเป็น Googlebot (Search Engine) 
+    # Facebook จะยอมให้ Redirect ลิงก์จริง หรือส่ง Canonical Tag มาให้ Bot เสมอเพื่อผลประโยชน์ทาง SEO
     try:
-        res = requests.get(url, impersonate="chrome", timeout=10, allow_redirects=True)
+        bot_headers = {
+            "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        }
+        # ไม่ใช้ impersonate="chrome" เพื่อให้ Header เป็น Googlebot เพียวๆ
+        res = requests.get(url, headers=bot_headers, timeout=10, allow_redirects=False)
         
-        meta_match = re.search(r'http-equiv=["\']?refresh["\']?[^>]*url=["\']?([^"\'>]+)["\']?', res.text, re.IGNORECASE)
+        # 1.1 ถ้าเตะ Redirect 301/302 ออกมาตรงๆ
+        if res.status_code in [301, 302, 303, 307] and 'Location' in res.headers:
+            real_url = res.headers['Location']
+            if "facebook.com/share/" not in real_url.lower() and "login" not in real_url.lower():
+                return real_url
+                
+        # 1.2 ถ้าให้หน้าเว็บมา เราจะหา Meta Refresh หรือ Canonical
+        res_full = requests.get(url, headers=bot_headers, timeout=10, allow_redirects=True)
+        meta_match = re.search(r'http-equiv=["\']?refresh["\']?[^>]*url=["\']?([^"\'>]+)["\']?', res_full.text, re.IGNORECASE)
         if meta_match:
             refresh_url = meta_match.group(1).replace('&amp;', '&')
             if "facebook.com/share/" not in refresh_url.lower() and "login" not in refresh_url.lower():
                 return refresh_url
-
-        js_match = re.search(r'window\.location\.(?:replace|href)\s*=\s*["\'](.*?)["\']', res.text, re.IGNORECASE)
-        if js_match:
-            js_url = js_match.group(1).replace('\\/', '/')
-            if "facebook.com/share/" not in js_url.lower() and "login" not in js_url.lower():
-                return js_url
-
-        if "login" in res.url.lower():
-            parsed = urlparse(res.url)
-            qs = parse_qs(parsed.query)
-            if 'next' in qs:
-                real_url = unquote(qs['next'][0])
-                if "facebook.com/share/" not in real_url.lower() and "login" not in real_url.lower():
-                    return real_url
-            return url
-
-        meta_og = re.search(r'property=["\']og:url["\']\s+content=["\']([^"\']+)["\']', res.text, re.IGNORECASE)
-        if meta_og:
-            og_url = meta_og.group(1).replace('&amp;', '&')
-            if "facebook.com/share/" not in og_url.lower() and "login" not in og_url.lower():
-                return og_url
                 
-        if "login" not in res.url.lower() and "facebook.com/share/" not in res.url.lower():
-            return res.url
+        canonical = re.search(r'<link\s+rel=["\']canonical["\']\s+href=["\']([^"\']+)["\']', res_full.text, re.IGNORECASE)
+        if canonical:
+            canonical_url = canonical.group(1).replace('&amp;', '&')
+            if "facebook.com/share/" not in canonical_url.lower() and "login" not in canonical_url.lower():
+                return canonical_url
     except Exception:
         pass
 
+    # 💡 ท่าที่ 2: ให้ Jina AI (Headless Browser) ช่วยแกะลิงก์ 
+    # ท่านี้ทรงพลังมาก เพราะมันรัน Javascript บน Cloud ให้เราเลย
     try:
-        proxy_url = f"https://api.allorigins.win/get?url={quote(url)}"
-        res_proxy = requests.get(proxy_url, impersonate="chrome", timeout=10)
-        if res_proxy.status_code == 200:
-            data = res_proxy.json()
-            final_url = data.get("status", {}).get("url", url)
-            if "facebook.com/share/" not in final_url.lower() and "login" not in final_url.lower():
-                return final_url
-            if "next=" in final_url.lower():
-                real_url = unquote(final_url.split("next=")[1].split("&")[0])
-                if "facebook.com/share/" not in real_url.lower() and "login" not in real_url.lower():
-                    return real_url
+        jina_req = requests.get(f"https://r.jina.ai/{url}", headers={"Accept": "application/json"}, timeout=10)
+        if jina_req.status_code == 200:
+            resolved_url = jina_req.json().get("data", {}).get("url", url)
+            if "facebook.com/share/" not in resolved_url.lower() and "login" not in resolved_url.lower():
+                return resolved_url
     except Exception:
         pass
+        
     return url
 
 def expand_url(url: str) -> str:
@@ -184,56 +179,68 @@ def extract_social_metadata(url: str) -> str:
             clean_url = url
             method_used = "" 
 
-            # 💡 ท่าไม้ตาย: ปลอมตัวเป็นระบบ Preview ของแอปแชท (WhatsApp/LINE) 
-            # Facebook จะยอมคายเนื้อหาโพสต์เต็มๆ ออกมาในรูปแบบ og:description ให้กับบอทนี้เสมอ
+            # 💡 ท่าที่ 1: ดึงผ่าน Official Iframe Plugin (ปลอดภัย 100% ถ้าลิงก์ไม่ใช่ /share/)
             try:
-                bot_headers = {
-                    "User-Agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
-                    "Accept-Language": "th-TH,th;q=0.9,en;q=0.8",
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-                }
-                # สังเกตว่าเราไม่ตั้งค่า impersonate="chrome" เพื่อบังคับให้ส่ง Header เป็นบอทจริงๆ
-                meta_res = requests.get(clean_url, headers=bot_headers, timeout=10, allow_redirects=True)
-                meta_res.encoding = 'utf-8'
-                soup_meta = BeautifulSoup(meta_res.text, 'html.parser')
+                embed_url = f"https://www.facebook.com/plugins/post.php?href={quote(clean_url)}&show_text=true"
+                res_embed = requests.get(embed_url, impersonate="chrome", timeout=10)
+                
+                if res_embed.status_code == 200:
+                    soup_embed = BeautifulSoup(res_embed.text, 'html.parser')
+                    for element in soup_embed(["script", "style", "form", "button", "a"]): 
+                        element.extract()
+                        
+                    extracted = soup_embed.get_text(separator='\n', strip=True)
+                    extracted = re.sub(r'(ดูโพสต์เพิ่มเติมจาก|เข้าสู่ระบบ|ลืมรหัสผ่าน|หาเพื่อนบน Facebook|บน Facebook|Log In|Sign Up).*', '', extracted, flags=re.IGNORECASE).strip()
 
-                og_title = soup_meta.find("meta", property="og:title") or soup_meta.find("meta", attrs={"name": "og:title"})
-                og_desc = soup_meta.find("meta", property="og:description") or soup_meta.find("meta", attrs={"name": "og:description"})
-                
-                title = og_title["content"] if og_title else ""
-                desc = og_desc["content"] if og_desc else ""
-                
-                combined = f"{title}\n{desc}".strip()
-                
-                # ล้างข้อความขยะระบบของ Facebook ที่มักติดมาตอนดึงข้อมูล
-                combined = re.sub(r'(ดูโพสต์เพิ่มเติมจาก|เข้าสู่ระบบ|ลืมรหัสผ่าน|หาเพื่อนบน Facebook|บน Facebook|Log In|Sign Up).*', '', combined, flags=re.IGNORECASE).strip()
-
-                if combined and not re.search(r'(log in to facebook|เข้าสู่ระบบ|error 404|ไม่พบเนื้อหา)', combined, re.IGNORECASE):
-                    if combined.lower() not in ["facebook", "facebook app", "meta"]:
-                        if len(combined) >= 10:
-                            fb_text = combined
-                            method_used = "[ดึงด้วย: WhatsApp/LINE Preview Bot 🚀]"
+                    if extracted and not re.search(r'(error 404|content not found|ไม่พบเนื้อหา)', extracted, re.IGNORECASE):
+                        if extracted.lower() not in ["facebook", "facebook app", "meta"]:
+                            if len(extracted) >= 10:
+                                fb_text = extracted
+                                method_used = "[ดึงด้วย: FB Embed Iframe 🌐]"
             except Exception:
                 pass
 
-            # ท่าสำรอง: ดึงผ่าน Iframe
+            # 💡 ท่าที่ 2: ดึงผ่าน Headless Cloud Browser ของ Jina AI (ไม่ต้องปวดหัวเรื่อง Login)
             if not fb_text:
                 try:
-                    embed_url = f"https://www.facebook.com/plugins/post.php?href={quote(clean_url)}&show_text=true"
-                    res_embed = requests.get(embed_url, impersonate="chrome", timeout=10)
-                    
-                    if res_embed.status_code == 200:
-                        soup_embed = BeautifulSoup(res_embed.text, 'html.parser')
-                        for element in soup_embed(["script", "style", "form", "button"]): 
-                            element.extract()
-                            
-                        extracted = soup_embed.get_text(separator=' ', strip=True)
+                    jina_req = requests.get(f"https://r.jina.ai/{clean_url}", impersonate="chrome", headers={"Accept": "application/json"}, timeout=12)
+                    if jina_req.status_code == 200:
+                        jina_data = jina_req.json().get("data", {})
+                        title = jina_data.get("title", "")
+                        content = jina_data.get("content", "")
+                        combined = f"{title}\n{content}".strip()
                         
-                        if extracted and not re.search(r'(log in to facebook|เข้าสู่ระบบ|error 404|content not found|ไม่พบเนื้อหา)', extracted, re.IGNORECASE):
-                            extracted = re.sub(r'(เข้าสู่ระบบ|ลืมรหัสผ่าน|Log In|Sign Up).*', '', extracted, flags=re.IGNORECASE).strip()
-                            if len(extracted) >= 5:
-                                fb_text = extracted
-                                method_used = "[ดึงด้วย: FB Embed Iframe 🌐]"
+                        combined = re.sub(r'(ดูโพสต์เพิ่มเติมจาก|เข้าสู่ระบบ|ลืมรหัสผ่าน|หาเพื่อนบน Facebook|บน Facebook|Log In|Sign Up).*', '', combined, flags=re.IGNORECASE).strip()
+
+                        if combined and not re.search(r'(error 404|ไม่พบเนื้อหา)', combined, re.IGNORECASE):
+                            if combined.lower() not in ["facebook", "facebook app", "meta"]:
+                                if len(combined) >= 10:
+                                    fb_text = combined
+                                    method_used = "[ดึงด้วย: Headless Cloud Browser ☁️]"
+                except Exception:
+                    pass
+
+            # 💡 ท่าที่ 3: ดึง Meta แบบ Chrome ปกติ (เผื่อ Jina ขัดข้อง)
+            if not fb_text:
+                try:
+                    meta_res = requests.get(clean_url, impersonate="chrome", timeout=10, allow_redirects=True)
+                    meta_res.encoding = 'utf-8'
+                    soup_meta = BeautifulSoup(meta_res.text, 'html.parser')
+
+                    og_title = soup_meta.find("meta", property="og:title") or soup_meta.find("meta", attrs={"name": "og:title"})
+                    og_desc = soup_meta.find("meta", property="og:description") or soup_meta.find("meta", attrs={"name": "og:description"})
+                    
+                    title = og_title["content"] if og_title else ""
+                    desc = og_desc["content"] if og_desc else ""
+                    combined = f"{title}\n{desc}".strip()
+                    
+                    combined = re.sub(r'(ดูโพสต์เพิ่มเติมจาก|เข้าสู่ระบบ|ลืมรหัสผ่าน|หาเพื่อนบน Facebook|บน Facebook|Log In|Sign Up).*', '', combined, flags=re.IGNORECASE).strip()
+
+                    if combined and not re.search(r'(error 404|ไม่พบเนื้อหา)', combined, re.IGNORECASE):
+                        if combined.lower() not in ["facebook", "facebook app", "meta"]:
+                            if len(combined) >= 10:
+                                fb_text = combined
+                                method_used = "[ดึงด้วย: Chrome Impersonation 🤖]"
                 except Exception:
                     pass
 
