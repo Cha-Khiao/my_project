@@ -3,12 +3,13 @@ import re
 import datetime
 import time
 import os
-import csv
 import concurrent.futures
 import threading 
+from dotenv import load_dotenv
 
-# สร้างกุญแจล็อกไฟล์ ป้องกันการแย่งเขียน CSV เมื่อมีผู้ใช้หลายคน
-csv_lock = threading.Lock() 
+import requests 
+
+load_dotenv()
 
 from scraper import extract_text_from_url
 from search import search_news_references
@@ -102,7 +103,7 @@ st.markdown("""
     div[data-testid="stButton"] button[kind="secondary"] { 
         position: fixed !important; 
         bottom: 15px !important; 
-        right: 15px !important; 
+        left: 15px !important; 
         opacity: 0.0 !important; 
         transition: all 0.3s ease-in-out !important; 
         z-index: 99999 !important; 
@@ -125,7 +126,7 @@ st.markdown("""
 
 # ================= 3. ฟังก์ชันจัดการข้อมูลและคะแนน =================
 def stream_text(text, delay=0.012):
-    text = text.replace("*", "") 
+    # 💡 เอาคำสั่ง replace("*", "") ออก เพื่อให้ตัวหนาแสดงผลได้สวยงามน่าอ่าน
     for word in text.split(" "):
         yield word + " "
         time.sleep(delay)
@@ -137,85 +138,106 @@ def extract_score_info(text):
     border_color = "rgba(148, 163, 184, 0.4)"
     label = "ไม่สามารถประเมินได้"
     
-    if "ระดับ 5" in text: 
-        pct = "95%"
-        color = "#10b981"
-        bg_color = "rgba(16, 185, 129, 0.1)"
-        border_color = "rgba(16, 185, 129, 0.4)"
-        label = "มีความน่าเชื่อถือสูง"
-    elif "ระดับ 4" in text: 
-        pct = "75%"
-        color = "#10b981"
-        bg_color = "rgba(16, 185, 129, 0.1)"
-        border_color = "rgba(16, 185, 129, 0.4)"
-        label = "มีความน่าเชื่อถือ"
-    elif "ระดับ 3" in text: 
-        pct = "50%"
-        color = "#f59e0b"
-        bg_color = "rgba(245, 158, 11, 0.1)"
-        border_color = "rgba(245, 158, 11, 0.4)"
-        label = "ข้อมูลก้ำกึ่ง / ไม่เพียงพอ"
-    elif "ระดับ 2" in text: 
-        pct = "25%"
-        color = "#ef4444"
-        bg_color = "rgba(239, 68, 68, 0.1)"
-        border_color = "rgba(239, 68, 68, 0.4)"
-        label = "มีความเสี่ยงเป็นข่าวบิดเบือน"
-    elif "ระดับ 1" in text or "ข่าวปลอม" in text or "เว็บไซต์อันตราย" in text: 
-        pct = "10%"
-        color = "#ef4444"
-        bg_color = "rgba(239, 68, 68, 0.1)"
-        border_color = "rgba(239, 68, 68, 0.4)"
-        label = "ข่าวปลอม / บิดเบือน"
-        
+    # 💡 ปรับ Regex ให้จับคะแนนครอบจักรวาล ไม่ว่าจะมีตัวหนา หรือ Markdown ติดมาด้วยก็ตาม
+    match = re.search(r'ระดับความน่าเชื่อถือ.*?(1|2|3|4|5)', text, re.IGNORECASE)
+    level = match.group(1) if match else None
+    
+    if not level: 
+        if "ระดับ 5" in text: level = "5"
+        elif "ระดับ 4" in text: level = "4"
+        elif "ระดับ 3" in text: level = "3"
+        elif "ระดับ 2" in text: level = "2"
+        elif "ระดับ 1" in text or "ข่าวปลอม" in text: level = "1"
+
+    if level == "5": return "95%", "#10b981", "rgba(16, 185, 129, 0.1)", "rgba(16, 185, 129, 0.4)", "มีความน่าเชื่อถือสูง"
+    elif level == "4": return "75%", "#10b981", "rgba(16, 185, 129, 0.1)", "rgba(16, 185, 129, 0.4)", "มีความน่าเชื่อถือ"
+    elif level == "3": return "50%", "#f59e0b", "rgba(245, 158, 11, 0.1)", "rgba(245, 158, 11, 0.4)", "ข้อมูลก้ำกึ่ง / ไม่เพียงพอ"
+    elif level == "2": return "25%", "#ef4444", "rgba(239, 68, 68, 0.1)", "rgba(239, 68, 68, 0.4)", "มีความเสี่ยงเป็นข่าวบิดเบือน"
+    elif level == "1": return "10%", "#ef4444", "rgba(239, 68, 68, 0.1)", "rgba(239, 68, 68, 0.4)", "ข่าวปลอม / บิดเบือน"
+    
     return pct, color, bg_color, border_color, label
 
 def parse_result_to_chunks(text):
     summary = ""
     reason = ""
+    refs = ""
     
-    summary_match = re.search(r'## 📌 1\. สรุปประเด็นสำคัญ(.*?)(?=## 📊 2\. การประเมินระดับความน่าเชื่อถือ|$)', text, re.DOTALL)
-    if summary_match: 
-        summary = summary_match.group(1).strip()
+    # 💡 ใช้เครื่องหมาย ## เป็นตัวตัดกล่องอย่างแม่นยำ ไม่สนว่าจะใช้อิโมจิอะไร
+    s1 = re.search(r'##[^#\n]*สรุปประเด็น.*?\n(.*?)(?=\n##|$)', text, re.DOTALL | re.IGNORECASE)
+    if s1: summary = s1.group(1).strip()
         
-    reason_match = re.search(r'## 📊 2\. การประเมินระดับความน่าเชื่อถือ(.*?)(?=## 🔗 3\. แหล่งอ้างอิง|---|$)', text, re.DOTALL)
-    if reason_match: 
-        raw_reason = reason_match.group(1).strip()
-        raw_reason = re.sub(r'\*?\*?ระดับความน่าเชื่อถือ.*?\n', '', raw_reason, flags=re.IGNORECASE)
-        raw_reason = re.sub(r'\*?\*?เหตุผลประกอบการประเมิน[^\n]*\n?', '', raw_reason, flags=re.IGNORECASE)
-        reason = raw_reason.strip()
+    s2 = re.search(r'##[^#\n]*การประเมิน.*?\n(.*?)(?=\n##|$)', text, re.DOTALL | re.IGNORECASE)
+    if s2: 
+        raw_reason = s2.group(1).strip()
+        # ตัดบรรทัดระดับคะแนนออกไป เพื่อไม่ให้แสดงซ้ำกับวงกลมคะแนน
+        raw_reason = re.sub(r'\*?\*?ระดับความน่าเชื่อถือ.*?\n', '', raw_reason + '\n', count=1, flags=re.IGNORECASE).strip()
+        # ทำความสะอาดคำนำหน้า ให้ข้อความกระชับขึ้น
+        reason = re.sub(r'^\*?\*?เหตุผลประกอบการประเมิน[^:\n]*:\s*\*?\*?', '', raw_reason, flags=re.IGNORECASE).strip()
+        
+    s3 = re.search(r'##[^#\n]*แหล่งอ้างอิง.*?\n(.*?)(?=\n##|$)', text, re.DOTALL | re.IGNORECASE)
+    if s3: refs = s3.group(1).strip()
         
     if not summary and not reason: 
-        summary = text.replace("*", "")
+        summary = text
         
-    return summary, reason
+    return summary, reason, refs
 
 def save_system_log(input_type, input_data, search_query, references, ai_result, process_time):
-    filename = "thesis_system_logs.csv"
-    file_exists = os.path.isfile(filename)
-    score = "N/A"
-    
+    webhook_url = ""
     try:
-        match = re.search(r'ระดับความน่าเชื่อถือ:.*?(1|2|3|4|5)', ai_result)
+        if "GSHEETS_WEBHOOK_URL" in st.secrets:
+            webhook_url = st.secrets["GSHEETS_WEBHOOK_URL"]
+    except Exception:
+        pass
+        
+    if not webhook_url:
+        webhook_url = os.getenv("GSHEETS_WEBHOOK_URL", "")
+        
+    if not webhook_url: return 
+    
+    score = "N/A"
+    try:
+        # 💡 อัปเดต Regex บันทึก Log ให้ครอบจักรวาลเหมือนกัน
+        match = re.search(r'ระดับความน่าเชื่อถือ.*?(1|2|3|4|5)', ai_result, re.IGNORECASE)
         if match: 
-            score = f"ระดับ {match.group(1)}"
+            level = match.group(1)
+            pct_map = {"5": "95%", "4": "75%", "3": "50%", "2": "25%", "1": "10%"}
+            score = f"ระดับ {level} ({pct_map.get(level, 'N/A')})"
     except Exception: 
         score = "Error"
         
-    short_input = input_data[:100].replace('\n', ' ') + "..." if len(input_data) > 100 else input_data.replace('\n', ' ')
+    if input_type == "URL Link":
+        short_input = input_data
+    else:
+        short_input = input_data[:200].replace('\n', ' ') + "..." if len(input_data) > 200 else input_data.replace('\n', ' ')
     
-    ref_details = " | ".join([f"{idx+1}. {r['title']} ({r['href']})" for idx, r in enumerate(references)]) if references else "ไม่พบอ้างอิงสืบค้น"
-    
-    with csv_lock: 
-        with open(filename, mode='a', encoding='utf-8-sig', newline='') as f:
-            writer = csv.writer(f)
-            if not file_exists:
-                writer.writerow(["วัน-เวลาที่ทดสอบ", "ประเภทข้อมูล", "ข้อความ (ย่อ)", "คำค้นหา", "จำนวนอ้างอิง", "แหล่งอ้างอิง", "ประเมิน", "เวลา(วินาที)"])
-            
-            current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            writer.writerow([current_time, input_type, short_input, search_query, len(references), ref_details, score, process_time])
+    if references:
+        ref_details = "\n".join([f"{idx+1}. {r['title']} ({r['href']})" for idx, r in enumerate(references)])
+    else:
+        ref_details = "ไม่พบอ้างอิงสืบค้น"
+        
+    current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-# ================= 4. ส่วนแสดงผล UI (Header) =================
+    payload = {
+        "timestamp": current_time,
+        "input_type": input_type,
+        "short_input": short_input,
+        "search_query": search_query,
+        "ref_count": len(references),
+        "ref_details": ref_details,
+        "score": score,
+        "process_time": process_time
+    }
+
+    def send_log_to_sheets():
+        try:
+            requests.post(webhook_url, json=payload, timeout=10, allow_redirects=True)
+        except Exception:
+            pass
+
+    threading.Thread(target=send_log_to_sheets, daemon=True).start()
+
+# ================= 4. ส่วนแสดงผล UI =================
 st.markdown("""
 <div style='text-align: center;'>
     <h1 style='font-size: 2.5rem; margin-bottom: 0px;'>🛡️ AI Fact-Checker</h1>
@@ -224,7 +246,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 st.write("") 
 
-# ================= 5. ส่วนรับข้อมูล =================
 tab1, tab2 = st.tabs(["🌐 ตรวจสอบจากลิงก์ (URL)", "📄 ตรวจสอบจากข้อความ"])
 
 news_content = ""
@@ -251,8 +272,6 @@ with tab1:
     if btn_url:
         if url_input:
             input_method_used = "URL Link"
-            
-            # 🛠️ [แก้ไขใหม่] Regex ครอบคลุมลิงก์มือถือที่มีอักขระแปลกๆ และลบวรรคตอนท้ายสุดออก
             url_match = re.search(r'(https?://[a-zA-Z0-9./?=_%&+\-#]+)', url_input)
             clean_url = url_match.group(1).rstrip('.,;!?)\'"]') if url_match else url_input.strip()
             
@@ -262,13 +281,11 @@ with tab1:
             else:
                 with st.spinner("⏳ กำลังเชื่อมต่อและสกัดเนื้อหาจากเว็บไซต์ปลายทาง..."):
                     extracted_data = cached_extract_text(clean_url)
-                    
                     if isinstance(extracted_data, dict):
                         news_content = extracted_data.get("error", extracted_data.get("content", ""))
                         original_url = extracted_data.get("actual_url", clean_url)
                     else: 
                         news_content = str(extracted_data)
-                        
                     if not news_content or str(news_content).strip() == "": 
                         news_content = "EMPTY_CONTENT"
         else: 
@@ -310,46 +327,37 @@ if news_content:
             
         elif news_content == "GAMBLING_DETECTED":
             st.write("🚫 ตรวจพบเนื้อหาความเสี่ยงสูง")
-            result = f"## 📌 1. สรุปประเด็นสำคัญ\nลิงก์เชื่อมโยงไปยังเว็บไซต์การพนันออนไลน์ สแปม หรือเนื้อหาหลอกลวงเกินจริง\n\n## 📊 2. การประเมินระดับความน่าเชื่อถือ\n**ระดับความน่าเชื่อถือ:** ระดับ 1\n\nระบบดำเนินการระงับการเชื่อมต่อเพื่อป้องกันความปลอดภัยของอุปกรณ์ผู้ใช้"
+            result = f"## 📌 1. สรุปประเด็นสำคัญ\nลิงก์เชื่อมโยงไปยังเว็บไซต์การพนันออนไลน์ สแปม หรือเนื้อหาหลอกลวงเกินจริง\n\n## 📊 2. การประเมินระดับความน่าเชื่อถือ\n**ระดับความน่าเชื่อถือ:** 1\n\nระบบดำเนินการระงับการเชื่อมต่อเพื่อป้องกันความปลอดภัยของอุปกรณ์ผู้ใช้"
         
         elif "ทะลวงระบบ" in news_content or "Error:" in news_content or "SOCIAL_BLOCKED" in news_content:
             st.write("⚠️ ระบบความปลอดภัย: ต้นทางปฏิเสธการดึงข้อมูล")
             result = f"## 📌 1. สรุปประเด็นสำคัญ\nเว็บไซต์ต้นทางมีระบบป้องกันบอท หรือโพสต์ถูกตั้งเป็นส่วนตัว ทำให้ระบบไม่สามารถสกัดข้อความได้\n\n## 📊 2. การประเมินระดับความน่าเชื่อถือ\n**ระดับความน่าเชื่อถือ:** N/A\n\n**ข้อแนะนำ:** กรุณาคัดลอกเนื้อหาหรือหัวข้อข่าว มาวางด้วยตนเองในแท็บ **'ตรวจสอบจากข้อความ'** ครับ"
             
-        # 💡 ดักจับ Error 404 หรือหน้าเว็บว่างเปล่าตั้งแต่หน้าประตู ไม่ส่งต่อให้ AI วิเคราะห์
         elif news_content in ["LINK_UNSUPPORTED", "EMPTY_CONTENT"] or "ไม่สามารถดึงข้อมูล" in news_content or re.search(r'(Error 404|404 Not Found|Page Not Found)', news_content, re.IGNORECASE):
             st.write("⚠️ เว็บไซต์ปลายทางปฏิเสธการเชื่อมต่อ")
             result = f"## 📌 1. สรุปประเด็นสำคัญ\nเว็บไซต์มีระบบป้องกันการดึงข้อมูลอัตโนมัติ (Anti-bot) หรือไม่พบเนื้อหาที่เป็นข้อความเพียงพอต่อการวิเคราะห์\n\n## 📊 2. การประเมินระดับความน่าเชื่อถือ\n**ระดับความน่าเชื่อถือ:** N/A\n\nกรุณาคัดลอกเนื้อหาที่ต้องการตรวจสอบ มาวางด้วยตนเองในแท็บ **'ตรวจสอบจากข้อความ'** ครับ"
             
         else:
             st.write("🧠 กำลังวิเคราะห์และจัดหมวดหมู่เนื้อหา...")
-            
             text_for_keyword = news_content.split("]:\n")[-1] if "[เนื้อหาข่าวจริง" in news_content else news_content
-            
-            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-                future_classify = executor.submit(cached_classify, text_for_keyword)
-                future_keywords = executor.submit(cached_generate_keywords, text_for_keyword)
-                
-                result_type, extracted_reason = future_classify.result()
+            result_type, extracted_reason = cached_classify(text_for_keyword)
 
-                if result_type == "DROP":
-                    st.write(f"⏭️ ยุติการตรวจสอบ: ข้อมูลไม่อยู่ในเงื่อนไขการประเมิน")
-                    search_query = "SKIP_SEARCH"
-                    result = f"## 📌 1. สรุปประเด็นสำคัญ\nไม่พบโครงสร้างของ 'ข้อเท็จจริงที่มีผลกระทบต่อสังคม' ในเนื้อหาที่ระบุ\n\n## 📊 2. การประเมินระดับความน่าเชื่อถือ\n**ระดับความน่าเชื่อถือ:** N/A\n\n{extracted_reason}"
-                else:
-                    st.write(f"✅ การวิเคราะห์บริบทเสร็จสิ้น: {extracted_reason}")
+            if result_type == "DROP":
+                st.write(f"⏭️ ยุติการตรวจสอบ: ข้อมูลไม่อยู่ในเงื่อนไขการประเมิน")
+                search_query = "SKIP_SEARCH"
+                result = f"## 📌 1. สรุปประเด็นสำคัญ\nไม่พบโครงสร้างของ 'ข้อเท็จจริงที่มีผลกระทบต่อสังคม' ในเนื้อหาที่ระบุ\n\n## 📊 2. การประเมินระดับความน่าเชื่อถือ\n**ระดับความน่าเชื่อถือ:** N/A\n\n{extracted_reason}"
+            else:
+                st.write(f"✅ การวิเคราะห์บริบทเสร็จสิ้น: {extracted_reason}")
+                
+                raw_query = cached_generate_keywords(text_for_keyword)
+                search_query = re.sub(r'[^\w\sก-๙]', ' ', raw_query).strip()
+                if not search_query: search_query = text_for_keyword[:60].strip()
+                
+                st.write("🌐 กำลังสืบค้นข้อมูลจากฐานข้อมูลที่น่าเชื่อถือ...")
+                references = cached_search(search_query)
                     
-                    raw_query = future_keywords.result()
-                    search_query = re.sub(r'[^\w\sก-๙]', ' ', raw_query).strip()
-                    
-                    if not search_query: 
-                        search_query = text_for_keyword[:60].strip()
-                    
-                    st.write("🌐 กำลังสืบค้นข้อมูลจากฐานข้อมูลที่น่าเชื่อถือ...")
-                    references = cached_search(search_query)
-                        
-                    st.write("⚖️ กำลังประมวลผลและสร้างบทวิเคราะห์...")
-                    result = cached_analyze(news_content, references, current_date_str)
+                st.write("⚖️ กำลังประมวลผลและสร้างบทวิเคราะห์...")
+                result = cached_analyze(news_content, references, current_date_str)
         
         total_time_taken = round(time.time() - start_process_time, 2)
         status.update(label=f"ประเมินผลเสร็จสิ้น (ใช้เวลา {total_time_taken} วินาที)", state="complete", expanded=False)
@@ -366,7 +374,7 @@ if news_content:
     """
     st.markdown(score_card_html, unsafe_allow_html=True)
 
-    summary_text, reason_text = parse_result_to_chunks(result)
+    summary_text, reason_text, refs_text = parse_result_to_chunks(result) 
     
     with st.container(border=True):
         st.subheader("🎯 สรุปประเด็น")
@@ -377,23 +385,21 @@ if news_content:
             st.subheader("💡 บทวิเคราะห์จาก AI")
             st.write_stream(stream_text(reason_text))
 
-    if references:
+    if refs_text and not re.search(r'(ไม่พบข่าว|ไม่พบข้อมูล|ผลการสืบค้นไม่พบ|ไม่มี|เป็นคนละเรื่อง)', refs_text):
         with st.container(border=True):
             st.subheader("🔗 แหล่งข้อมูลอ้างอิง")
-            for idx, r in enumerate(references):
-                st.markdown(f"{idx+1}. [{r['title']}]({r['href']})")
+            st.markdown(refs_text)
     elif "SKIP_SEARCH" not in search_query:
         with st.container(border=True):
             st.subheader("🔗 แหล่งข้อมูลอ้างอิง")
             st.info("ไม่พบข้อมูลอ้างอิงที่ตรงกันจากแหล่งข่าวอินเทอร์เน็ต")
             
-    # บันทึก Log
     try:
         log_input_data = original_url if original_url else news_content
         save_system_log(input_method_used, log_input_data, search_query, references, result, total_time_taken)
     except Exception: 
         pass
 
-# ================= 8. ปุ่มเคลียร์แคช (ซ่อน) =================
+# ================= 8. ปุ่มเคลียร์แคช =================
 if st.button("⚙️", key="clear_cache_btn"): 
     st.cache_data.clear()

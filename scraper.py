@@ -1,5 +1,6 @@
 import os
 import re
+import concurrent.futures
 from bs4 import BeautifulSoup
 from urllib.parse import unquote, quote, urlparse, parse_qs
 from curl_cffi import requests
@@ -54,57 +55,62 @@ def clean_mobile_url(url: str) -> str:
 def resolve_facebook_redirects(url: str) -> str:
     if "facebook.com/share/" not in url.lower() and "fb.watch" not in url.lower():
         return url
-    
-    # 💡 ท่าที่ 1: อ้างตัวเป็น Googlebot (Search Engine) 
-    # Facebook จะยอมให้ Redirect ลิงก์จริง หรือส่ง Canonical Tag มาให้ Bot เสมอเพื่อผลประโยชน์ทาง SEO
-    try:
-        bot_headers = {
-            "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-        }
-        # ไม่ใช้ impersonate="chrome" เพื่อให้ Header เป็น Googlebot เพียวๆ
-        res = requests.get(url, headers=bot_headers, timeout=10, allow_redirects=False)
         
-        # 1.1 ถ้าเตะ Redirect 301/302 ออกมาตรงๆ
-        if res.status_code in [301, 302, 303, 307] and 'Location' in res.headers:
-            real_url = res.headers['Location']
-            if "facebook.com/share/" not in real_url.lower() and "login" not in real_url.lower():
-                return real_url
-                
-        # 1.2 ถ้าให้หน้าเว็บมา เราจะหา Meta Refresh หรือ Canonical
-        res_full = requests.get(url, headers=bot_headers, timeout=10, allow_redirects=True)
-        meta_match = re.search(r'http-equiv=["\']?refresh["\']?[^>]*url=["\']?([^"\'>]+)["\']?', res_full.text, re.IGNORECASE)
-        if meta_match:
-            refresh_url = meta_match.group(1).replace('&amp;', '&')
-            if "facebook.com/share/" not in refresh_url.lower() and "login" not in refresh_url.lower():
-                return refresh_url
-                
-        canonical = re.search(r'<link\s+rel=["\']canonical["\']\s+href=["\']([^"\']+)["\']', res_full.text, re.IGNORECASE)
-        if canonical:
-            canonical_url = canonical.group(1).replace('&amp;', '&')
-            if "facebook.com/share/" not in canonical_url.lower() and "login" not in canonical_url.lower():
-                return canonical_url
-    except Exception:
-        pass
+    # ⚡ ทำงานขนานกันระหว่าง Googlebot และ Jina AI
+    def try_googlebot():
+        try:
+            bot_headers = {
+                "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+            }
+            res = requests.get(url, headers=bot_headers, timeout=8, allow_redirects=False)
+            
+            if res.status_code in [301, 302, 303, 307] and 'Location' in res.headers:
+                real_url = res.headers['Location']
+                if "facebook.com/share/" not in real_url.lower() and "login" not in real_url.lower():
+                    return real_url
+                    
+            res_full = requests.get(url, headers=bot_headers, timeout=8, allow_redirects=True)
+            meta_match = re.search(r'http-equiv=["\']?refresh["\']?[^>]*url=["\']?([^"\'>]+)["\']?', res_full.text, re.IGNORECASE)
+            if meta_match:
+                refresh_url = meta_match.group(1).replace('&amp;', '&')
+                if "facebook.com/share/" not in refresh_url.lower() and "login" not in refresh_url.lower():
+                    return refresh_url
+                    
+            canonical = re.search(r'<link\s+rel=["\']canonical["\']\s+href=["\']([^"\']+)["\']', res_full.text, re.IGNORECASE)
+            if canonical:
+                canonical_url = canonical.group(1).replace('&amp;', '&')
+                if "facebook.com/share/" not in canonical_url.lower() and "login" not in canonical_url.lower():
+                    return canonical_url
+        except Exception:
+            pass
+        return None
 
-    # 💡 ท่าที่ 2: ให้ Jina AI (Headless Browser) ช่วยแกะลิงก์ 
-    # ท่านี้ทรงพลังมาก เพราะมันรัน Javascript บน Cloud ให้เราเลย
-    try:
-        jina_req = requests.get(f"https://r.jina.ai/{url}", headers={"Accept": "application/json"}, timeout=10)
-        if jina_req.status_code == 200:
-            resolved_url = jina_req.json().get("data", {}).get("url", url)
-            if "facebook.com/share/" not in resolved_url.lower() and "login" not in resolved_url.lower():
-                return resolved_url
-    except Exception:
-        pass
-        
+    def try_jina():
+        try:
+            jina_req = requests.get(f"https://r.jina.ai/{url}", headers={"Accept": "application/json"}, timeout=8)
+            if jina_req.status_code == 200:
+                resolved_url = jina_req.json().get("data", {}).get("url", url)
+                if "facebook.com/share/" not in resolved_url.lower() and "login" not in resolved_url.lower():
+                    return resolved_url
+        except Exception:
+            pass
+        return None
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(try_googlebot), executor.submit(try_jina)]
+        for future in concurrent.futures.as_completed(futures):
+            result = future.result()
+            if result:
+                return result
+                
     return url
 
 def expand_url(url: str) -> str:
     redirectors = ['shorturl.', 'bit.ly', 'tinyurl.', 't.co', 'cutt.ly', 'rebrand.ly', 'lnkd.in', 'vt.tiktok.com', 'vm.tiktok.com', 'youtu.be', 'line.me', 'liff.line.me']
     if any(r in url.lower() for r in redirectors):
         try:
-            res = requests.get(url, impersonate="safari", allow_redirects=True, timeout=10)
+            res = requests.get(url, impersonate="safari", allow_redirects=True, timeout=8)
             final_url = res.url
             meta_match = re.search(r'http-equiv=["\']?refresh["\']?[^>]*url=["\']?([^"\'>]+)["\']?', res.text, re.IGNORECASE)
             if meta_match: 
@@ -124,7 +130,7 @@ def extract_social_metadata(url: str) -> str:
             if match:
                 clean_path = match.group(1).split('?')[0] 
                 api_url = "https://api.vxtwitter.com" + clean_path
-                res = requests.get(api_url, impersonate="chrome", timeout=10)
+                res = requests.get(api_url, impersonate="chrome", timeout=8)
                 if res.status_code == 200:
                     data = res.json()
                     title = data.get("user_name", "ผู้ใช้งาน X")
@@ -139,7 +145,7 @@ def extract_social_metadata(url: str) -> str:
                 shortcode = match.group(1)
                 embed_url = f"https://www.instagram.com/p/{shortcode}/embed/captioned/"
                 try:
-                    res = requests.get(embed_url, impersonate="chrome", timeout=10)
+                    res = requests.get(embed_url, impersonate="chrome", timeout=8)
                     if res.status_code == 200:
                         soup = BeautifulSoup(res.text, 'html.parser')
                         caption_div = soup.find(class_='Caption')
@@ -159,7 +165,7 @@ def extract_social_metadata(url: str) -> str:
                 if match_path:
                     clean_path = match_path.group(1).split('?')[0]
                     ig_proxy_url = "https://ddinstagram.com" + clean_path
-                    response = requests.get(ig_proxy_url, impersonate="chrome", timeout=10)
+                    response = requests.get(ig_proxy_url, impersonate="chrome", timeout=8)
                     if response.status_code == 200:
                         soup = BeautifulSoup(response.text, 'html.parser')
                         og_title = soup.find("meta", property="og:title") or soup.find("meta", attrs={"name": "og:title"})
@@ -175,81 +181,73 @@ def extract_social_metadata(url: str) -> str:
 
         # --- Facebook ---
         elif "facebook.com" in url or "fb.watch" in url:
-            fb_text = ""
             clean_url = url
-            method_used = "" 
-
-            # 💡 ท่าที่ 1: ดึงผ่าน Official Iframe Plugin (ปลอดภัย 100% ถ้าลิงก์ไม่ใช่ /share/)
-            try:
-                embed_url = f"https://www.facebook.com/plugins/post.php?href={quote(clean_url)}&show_text=true"
-                res_embed = requests.get(embed_url, impersonate="chrome", timeout=10)
-                
-                if res_embed.status_code == 200:
-                    soup_embed = BeautifulSoup(res_embed.text, 'html.parser')
-                    for element in soup_embed(["script", "style", "form", "button", "a"]): 
-                        element.extract()
-                        
-                    extracted = soup_embed.get_text(separator='\n', strip=True)
-                    extracted = re.sub(r'(ดูโพสต์เพิ่มเติมจาก|เข้าสู่ระบบ|ลืมรหัสผ่าน|หาเพื่อนบน Facebook|บน Facebook|Log In|Sign Up).*', '', extracted, flags=re.IGNORECASE).strip()
-
-                    if extracted and not re.search(r'(error 404|content not found|ไม่พบเนื้อหา)', extracted, re.IGNORECASE):
-                        if extracted.lower() not in ["facebook", "facebook app", "meta"]:
-                            if len(extracted) >= 10:
-                                fb_text = extracted
-                                method_used = "[ดึงด้วย: FB Embed Iframe 🌐]"
-            except Exception:
-                pass
-
-            # 💡 ท่าที่ 2: ดึงผ่าน Headless Cloud Browser ของ Jina AI (ไม่ต้องปวดหัวเรื่อง Login)
-            if not fb_text:
+            
+            # ⚡ ทำงานขนานกันระหว่าง Iframe, Jina และ Meta
+            def fb_iframe():
                 try:
-                    jina_req = requests.get(f"https://r.jina.ai/{clean_url}", impersonate="chrome", headers={"Accept": "application/json"}, timeout=12)
+                    embed_url = f"https://www.facebook.com/plugins/post.php?href={quote(clean_url)}&show_text=true"
+                    res_embed = requests.get(embed_url, impersonate="chrome", timeout=8)
+                    if res_embed.status_code == 200:
+                        soup_embed = BeautifulSoup(res_embed.text, 'html.parser')
+                        for element in soup_embed(["script", "style", "form", "button", "a"]): 
+                            element.extract()
+                        extracted = soup_embed.get_text(separator='\n', strip=True)
+                        extracted = re.sub(r'(ดูโพสต์เพิ่มเติมจาก|เข้าสู่ระบบ|ลืมรหัสผ่าน|หาเพื่อนบน Facebook|บน Facebook|Log In|Sign Up).*', '', extracted, flags=re.IGNORECASE).strip()
+                        if extracted and not re.search(r'(error 404|content not found|ไม่พบเนื้อหา)', extracted, re.IGNORECASE):
+                            if extracted.lower() not in ["facebook", "facebook app", "meta"]:
+                                if len(extracted) >= 10:
+                                    return extracted, "[ดึงด้วย: FB Embed Iframe 🌐]"
+                except Exception:
+                    pass
+                return None, None
+
+            def fb_jina():
+                try:
+                    jina_req = requests.get(f"https://r.jina.ai/{clean_url}", impersonate="chrome", headers={"Accept": "application/json"}, timeout=8)
                     if jina_req.status_code == 200:
                         jina_data = jina_req.json().get("data", {})
                         title = jina_data.get("title", "")
                         content = jina_data.get("content", "")
                         combined = f"{title}\n{content}".strip()
-                        
                         combined = re.sub(r'(ดูโพสต์เพิ่มเติมจาก|เข้าสู่ระบบ|ลืมรหัสผ่าน|หาเพื่อนบน Facebook|บน Facebook|Log In|Sign Up).*', '', combined, flags=re.IGNORECASE).strip()
-
                         if combined and not re.search(r'(error 404|ไม่พบเนื้อหา)', combined, re.IGNORECASE):
                             if combined.lower() not in ["facebook", "facebook app", "meta"]:
                                 if len(combined) >= 10:
-                                    fb_text = combined
-                                    method_used = "[ดึงด้วย: Headless Cloud Browser ☁️]"
+                                    return combined, "[ดึงด้วย: Headless Cloud Browser ☁️]"
                 except Exception:
                     pass
+                return None, None
 
-            # 💡 ท่าที่ 3: ดึง Meta แบบ Chrome ปกติ (เผื่อ Jina ขัดข้อง)
-            if not fb_text:
+            def fb_meta():
                 try:
-                    meta_res = requests.get(clean_url, impersonate="chrome", timeout=10, allow_redirects=True)
+                    meta_res = requests.get(clean_url, impersonate="chrome", timeout=8, allow_redirects=True)
                     meta_res.encoding = 'utf-8'
                     soup_meta = BeautifulSoup(meta_res.text, 'html.parser')
-
                     og_title = soup_meta.find("meta", property="og:title") or soup_meta.find("meta", attrs={"name": "og:title"})
                     og_desc = soup_meta.find("meta", property="og:description") or soup_meta.find("meta", attrs={"name": "og:description"})
-                    
                     title = og_title["content"] if og_title else ""
                     desc = og_desc["content"] if og_desc else ""
                     combined = f"{title}\n{desc}".strip()
-                    
                     combined = re.sub(r'(ดูโพสต์เพิ่มเติมจาก|เข้าสู่ระบบ|ลืมรหัสผ่าน|หาเพื่อนบน Facebook|บน Facebook|Log In|Sign Up).*', '', combined, flags=re.IGNORECASE).strip()
-
                     if combined and not re.search(r'(error 404|ไม่พบเนื้อหา)', combined, re.IGNORECASE):
                         if combined.lower() not in ["facebook", "facebook app", "meta"]:
                             if len(combined) >= 10:
-                                fb_text = combined
-                                method_used = "[ดึงด้วย: Chrome Impersonation 🤖]"
+                                return combined, "[ดึงด้วย: Chrome Impersonation 🤖]"
                 except Exception:
                     pass
+                return None, None
 
-            if not fb_text or re.search(r'(log in to facebook|เข้าสู่ระบบ|error 404|page not found|ไม่พบเนื้อหา)', fb_text, re.IGNORECASE):
-                return "Error: Facebook บล็อกเนื้อหา (อาจเป็นโพสต์กลุ่มปิด หรือถูกตั้งเป็นส่วนตัว)"
-            
-            return f"โพสต์จาก Facebook {method_used}:\n{fb_text}"
+            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+                futures = [executor.submit(fb_iframe), executor.submit(fb_jina), executor.submit(fb_meta)]
+                for future in concurrent.futures.as_completed(futures):
+                    res_text, method = future.result()
+                    if res_text:
+                        return f"โพสต์จาก Facebook {method}:\n{res_text}"
+                        
+            return "Error: Facebook บล็อกเนื้อหา (อาจเป็นโพสต์กลุ่มปิด หรือถูกตั้งเป็นส่วนตัว)"
 
-        response = requests.get(url, impersonate="chrome", timeout=10)
+        response = requests.get(url, impersonate="chrome", timeout=8)
         soup = BeautifulSoup(response.text, 'html.parser')
         
         og_title = soup.find("meta", property="og:title") or soup.find("meta", attrs={"name": "og:title"})
@@ -266,7 +264,7 @@ def extract_social_metadata(url: str) -> str:
 def force_extract_news_link(social_url: str) -> str:
     if "x.com" in social_url.lower() or "twitter.com" in social_url.lower(): return ""
     try:
-        response = requests.get(social_url, impersonate="chrome", timeout=10, allow_redirects=True)
+        response = requests.get(social_url, impersonate="chrome", timeout=8, allow_redirects=True)
         decoded_html = unquote(response.text)
         whitelist = ['thairath.co.th', 'khaosod.co.th', 'matichon.co.th', 'dailynews.co.th', 'sanook.com', 'prachachat.net', 'bangkokbiznews.com', 'mgronline.com', 'thaipbs.or.th', 'pptvhd36.com', 'ch7.com', 'thestandard.co', 'workpointtoday.com', 'amarintv.com', 'nationtv.tv', 'tnnthailand.com', 'springnews.co.th']
         domain_pattern = "|".join([d.replace('.', r'\.') for d in whitelist])
@@ -283,31 +281,42 @@ def force_extract_news_link(social_url: str) -> str:
 def fetch_with_fallback(url: str) -> str:
     anti_bot_patterns = r'(cloudflare|500 internal server error|403 forbidden|access denied|captcha|not acceptable|checking your browser|security check|just a moment|log in to facebook|เข้าสู่ระบบ|error 404|404 not found|page not found|ไม่พบหน้านี้|ไม่พบเนื้อหา|content not found|this page isn\'t available|หน้านี้ไม่พร้อมใช้งาน|อาจเสียหรือถูกลบไปแล้ว)'
     
-    try:
-        res = requests.get(url, impersonate="chrome", timeout=8, allow_redirects=True)
-        if res.status_code == 200:
-            if res.encoding is None or res.encoding.lower() == 'iso-8859-1':
-                res.encoding = res.apparent_encoding or 'utf-8'
-            soup = BeautifulSoup(res.text, 'html.parser')
-            for element in soup(["script", "style", "nav", "header", "footer", "aside", "noscript"]): 
-                element.extract()
-            clean_text = re.sub(r'\s+', ' ', soup.get_text(separator=' ', strip=True)).strip()
-            
-            if len(clean_text) > 100 and not re.search(anti_bot_patterns, clean_text, re.IGNORECASE):
-                return clean_text
-    except Exception:
-        pass
+    # ⚡ ทำงานขนานกันระหว่าง Native Curl และ Jina AI
+    def fetch_native():
+        try:
+            res = requests.get(url, impersonate="chrome", timeout=8, allow_redirects=True)
+            if res.status_code == 200:
+                if res.encoding is None or res.encoding.lower() == 'iso-8859-1':
+                    res.encoding = res.apparent_encoding or 'utf-8'
+                soup = BeautifulSoup(res.text, 'html.parser')
+                for element in soup(["script", "style", "nav", "header", "footer", "aside", "noscript"]): 
+                    element.extract()
+                clean_text = re.sub(r'\s+', ' ', soup.get_text(separator=' ', strip=True)).strip()
+                if len(clean_text) > 100 and not re.search(anti_bot_patterns, clean_text, re.IGNORECASE):
+                    return clean_text
+        except Exception:
+            pass
+        return None
 
-    try:
-        jina_url = f"https://r.jina.ai/{url}"
-        response = requests.get(jina_url, impersonate="chrome", headers={"Accept": "text/plain", "X-Retain-Images": "none"}, timeout=10)
-        if response.status_code == 200:
-            content = response.text
-            if len(content.strip()) > 100 and not re.search(anti_bot_patterns, content, re.IGNORECASE): 
-                return content
-    except Exception:
-        pass
-        
+    def fetch_jina():
+        try:
+            jina_url = f"https://r.jina.ai/{url}"
+            response = requests.get(jina_url, impersonate="chrome", headers={"Accept": "text/plain", "X-Retain-Images": "none"}, timeout=8)
+            if response.status_code == 200:
+                content = response.text
+                if len(content.strip()) > 100 and not re.search(anti_bot_patterns, content, re.IGNORECASE): 
+                    return content
+        except Exception:
+            pass
+        return None
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(fetch_native), executor.submit(fetch_jina)]
+        for future in concurrent.futures.as_completed(futures):
+            res = future.result()
+            if res:
+                return res
+                
     return ""
 
 def extract_text_from_url(url: str) -> dict:
