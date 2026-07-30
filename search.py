@@ -6,34 +6,27 @@ import re
 import concurrent.futures
 
 # ================= โค้ดส่วนจัดการเงื่อนไข =================
-def is_valid_news_title(title: str, query: str = "") -> bool:
-    if not title or len(title) < 10: return False
+def is_valid_news_title(title: str) -> bool:
+    if not title or len(title) < 5: return False
     if not re.search(r'[ก-๙]', title): return False
     
-    # 💡 เพิ่มดักจับคีย์เวิร์ดหน้าเว็บขยะประเภท "รวมข่าว", "บทความและข่าว" ฯลฯ อย่างเข้มงวด
+    # 💡 ถอดคำขยะที่อาจบังเอิญไปตรงกับชื่อข่าวจริงๆ ออกไป (เช่น tag, 18+)
     hard_trash = [
-        'หน้าแรก', 'เข้าสู่ระบบ', 'สมัครสมาชิก', 'หมวดหมู่', 'tag', 'archive', 'คลิปหลุด', '18+', 
-        'รวมข่าว', 'ข่าวล่าสุด', 'หน้าหลัก', 'ประเด็นร้อน', 'อัปเดตล่าสุด', 'บทความและข่าว', 
-        'แท็ก', 'tags', 'เรื่องที่เกี่ยวข้อง'
+        'บทความและข่าว', 'รวมข่าว', 'ข่าวล่าสุด', 'หน้าหลัก', 'ประเด็นร้อน', 'อัปเดตล่าสุด',
+        'แท็ก', 'เรื่องที่เกี่ยวข้อง', 'หน้าแรก', 'เข้าสู่ระบบ', 'สมัครสมาชิก', 'หมวดหมู่',
+        'แคปชั่น', 'คำคม', 'คลิปหลุด', 'หวย', 'เลขเด็ด', 'สลากกินแบ่ง'
     ]
-    if any(trash in title.lower() for trash in hard_trash): return False
-    
-    dynamic_spam = ['หวย', 'เลขเด็ด', 'ดูดวง', 'ผลบอล', 'สลากกินแบ่ง']
-    if any(spam in title.lower() for spam in dynamic_spam):
-        if not query or not any(spam in query.lower() for spam in dynamic_spam):
-            return False 
-            
-    if query:
-        query_words = query.split()
-        core_words = [w for w in query_words if len(w) > 2]
-        if core_words:
-            matches = [w for w in core_words if w.lower() in title.lower()]
-            if len(matches) == 0:
-                return False
-            if len(core_words) >= 3 and len(matches) < 2:
-                return False
+    if any(trash in title.lower() for trash in hard_trash): 
+        return False
+        
+    # 💡 ยกเลิกการกรองคำค้นหาที่ตึงเกินไป (Soft-Match) เพื่อปล่อยให้ข่าวทุกบริบทรอดเข้าไปให้ AI อ่านได้
                 
     return True
+
+def is_blacklisted_domain(domain: str) -> bool:
+    # แบนโซเชียลมีเดียและเว็บบอร์ดขยะไม่ให้เข้ามาเป็นอ้างอิงเด็ดขาด
+    blacklist = ['tiktok.com', 'facebook.com', 'instagram.com', 'x.com', 'twitter.com', 'pantip.com', 'youtube.com']
+    return any(b in domain.lower() for b in blacklist)
 
 # ================= ฟังก์ชันค้นหาหลัก =================
 def search_news_references(query: str, num_results: int = 5) -> list:
@@ -68,7 +61,6 @@ def search_news_references(query: str, num_results: int = 5) -> list:
                     title = item.find('title').text if item.find('title') is not None else ""
                     link = item.find('link').text if item.find('link') is not None else ""
                     
-                    # 💡 สกัดวันที่ลงข่าว (Publish Date)
                     pub_date_tag = item.find('pubDate')
                     pub_date = pub_date_tag.text if pub_date_tag is not None else "ไม่ระบุ"
                     
@@ -78,10 +70,11 @@ def search_news_references(query: str, num_results: int = 5) -> list:
                         snippet_soup = BeautifulSoup(desc.text, "html.parser")
                         snippet = snippet_soup.get_text(strip=True)
                     
-                    if is_valid_news_title(title, query):
-                        res.append({'title': title, 'href': link, 'pub_date': pub_date, 'snippet': snippet if snippet else "Google News"})
+                    domain = urlparse(link.lower()).netloc.replace('www.', '')
+                    if not is_blacklisted_domain(domain) and is_valid_news_title(title):
+                        res.append({'title': title, 'href': link, 'pub_date': pub_date, 'snippet': snippet if snippet else "Google News", 'domain': domain})
         except Exception as e: 
-            print(f"Google RSS Error: {e}")
+            pass
         return res
 
     def fetch_bing_rss():
@@ -95,7 +88,6 @@ def search_news_references(query: str, num_results: int = 5) -> list:
                     title = item.find('title').text if item.find('title') is not None else ""
                     link = item.find('link').text if item.find('link') is not None else ""
                     
-                    # 💡 สกัดวันที่ลงข่าว (Publish Date)
                     pub_date_tag = item.find('pubDate')
                     pub_date = pub_date_tag.text if pub_date_tag is not None else "ไม่ระบุ"
                     
@@ -105,10 +97,10 @@ def search_news_references(query: str, num_results: int = 5) -> list:
                         snippet = desc.text.strip()
                         
                     domain = urlparse(link.lower()).netloc.replace('www.', '')
-                    if any(wd in domain for wd in whitelist) and is_valid_news_title(title, query):
-                        res.append({'title': title, 'href': link, 'pub_date': pub_date, 'snippet': snippet if snippet else "Bing News"})
+                    if not is_blacklisted_domain(domain) and is_valid_news_title(title):
+                        res.append({'title': title, 'href': link, 'pub_date': pub_date, 'snippet': snippet if snippet else "Bing News", 'domain': domain})
         except Exception as e: 
-            print(f"Bing RSS Error: {e}")
+            pass
         return res
         
     def fetch_ddg_html():
@@ -134,11 +126,10 @@ def search_news_references(query: str, num_results: int = 5) -> list:
                     if not link or not title: continue
                     
                     domain = urlparse(link.lower()).netloc.replace('www.', '')
-                    if any(wd in domain for wd in whitelist) and is_valid_news_title(title, query):
-                        # DDG ไม่มี PubDate ที่ชัดเจน
-                        res.append({'title': title, 'href': link, 'pub_date': 'ไม่ระบุ', 'snippet': snippet})
+                    if not is_blacklisted_domain(domain) and is_valid_news_title(title):
+                        res.append({'title': title, 'href': link, 'pub_date': 'ไม่ระบุ', 'snippet': snippet, 'domain': domain})
         except Exception as e: 
-            print(f"DDG Error: {e}")
+            pass
         return res
 
     results = []
@@ -157,5 +148,19 @@ def search_news_references(query: str, num_results: int = 5) -> list:
                 if item['href'] not in urls_seen:
                     urls_seen.add(item['href'])
                     results.append(item)
+                    
+    # 💡 อุดรอยรั่ว! ให้ความสำคัญกับ news.google.com เป็นอันดับ 1 เพื่อไม่ให้ข่าวจริงกระเด็นหลุดไป
+    def get_priority(item):
+        domain = item.get('domain', '')
+        if 'antifakenewscenter.com' in domain or 'sure.factcheckthailand.org' in domain or 'cofact.org' in domain:
+            return 0 
+        elif any(wd in domain for wd in whitelist) or 'news.google.com' in domain:
+            return 1
+        return 2
+
+    results.sort(key=get_priority)
+    
+    for r in results:
+        r.pop('domain', None)
                     
     return results[:num_results]
