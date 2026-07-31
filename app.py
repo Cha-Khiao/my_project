@@ -33,7 +33,6 @@ def cached_analyze(news_text, references, current_date):
 def cached_critic(news_text, references, initial_analysis):
     return critic_review_analysis(news_text, references, initial_analysis)
 
-# 💡 ฟังก์ชัน Progress Bar แอนิเมชันลื่นไหล (ไม่ใช้ Text ซ้ำซ้อน)
 def smooth_progress(progress_bar, start_val, end_val, text_label, delay=0.01):
     for i in range(start_val, end_val + 1):
         progress_bar.progress(i, text=text_label)
@@ -150,7 +149,7 @@ if news_content:
     
     references = []
     result_dict = {
-        "content_summary": "N/A", "timeline_analysis": "N/A", "relevance_analysis": "N/A",
+        "content_summary": "N/A", "timeline_analysis": "N/A", "cross_checking": "N/A",
         "score": "N/A", "reason": "N/A", "relevant_ref_ids": []
     }
     search_query = "SKIP_SEARCH"
@@ -218,7 +217,9 @@ if news_content:
                     if r['href'] not in seen_urls:
                         seen_urls.add(r['href'])
                         unique_refs.append(r)
-                references = unique_refs[:8]
+                        
+                # 💡 ขยายขีดจำกัดจาก 10 เป็น 15 ข่าว เพื่อเพิ่มตัวเลือกให้ AI หาข่าวที่ตรงเป๊ะได้มากขึ้น
+                references = unique_refs[:15]
                 
                 st.markdown(f"🔎 **ค้นพบแหล่งข้อมูลอ้างอิงเบื้องต้นจำนวน {len(references)} แหล่ง**")
                 
@@ -235,7 +236,6 @@ if news_content:
                     if final_dict:
                         result_dict = final_dict
                         
-                        # 💡 2. เปลี่ยนหลอดเป็น 100% และแสดงข้อความเป๊ะๆ ตอนจบ
                         total_time_taken = round(time.time() - start_process_time, 2)
                         progress_bar.progress(100, text=f"ประเมินเสร็จสมบูรณ์ (100%) (ใช้เวลาตรวจสอบ {total_time_taken} วินาที)")
                         st.markdown("✨ **ประเมินผลสำเร็จ!**")
@@ -256,15 +256,14 @@ if news_content:
         st.subheader("🎯 ประเด็นหลักของเนื้อหา")
         st.markdown(f"**📌 สรุปเหตุการณ์:**\n{result_dict.get('content_summary', 'ไม่มีข้อมูล')}")
         st.markdown(f"**⏱️ ไทม์ไลน์ของเหตุการณ์:**\n{result_dict.get('timeline_analysis', 'ไม่มีข้อมูล')}")
-        st.markdown(f"**📰 ข้อมูลเปรียบเทียบจากสื่อหลัก:**\n{result_dict.get('relevance_analysis', 'ไม่มีข้อมูล')}")
         
     with st.container(border=True):
         st.subheader("💡 กระบวนการคิดและบทสรุปจาก AI")
-        # 💡 โชว์การถอดรหัส 5W1H และการเทียบกับอ้างอิง
         st.markdown(f"**🧠 สกัดประเด็น (5W1H):**\n{result_dict.get('claim_5w1h', 'ไม่มีข้อมูล')}")
         st.markdown(f"**📰 ตรวจสอบเทียบกับอ้างอิง:**\n{result_dict.get('cross_checking', 'ไม่มีข้อมูล')}")
         st.markdown(f"**⚖️ สรุปฟันธง:**\n{result_dict.get('reason', 'ไม่มีคำอธิบายเพิ่มเติม')}")
 
+    # 💡 นำลิงก์มาคัดกรอง: แสดงเฉพาะลิงก์ที่ AI ยืนยันว่า "เกี่ยวข้องกันจริงๆ" เท่านั้น (ซ่อนข่าวขยะทั้งหมดแบบสะอาดตา)
     rel_ids = result_dict.get("relevant_ref_ids", [])
     valid_refs = []
     
@@ -279,13 +278,13 @@ if news_content:
 
     if valid_refs:
         with st.container(border=True):
-            st.subheader("🔗 แหล่งข่าวที่เกี่ยวข้อง (สำหรับอ่านเพิ่มเติม)")
+            st.subheader("🔗 แหล่งข่าวที่เกี่ยวข้อง (อ้างอิงจากเนื้อหา)")
             for idx, ref in enumerate(valid_refs):
                 st.markdown(f"{idx+1}. [{ref.get('title', 'ลิงก์อ้างอิง')}]({ref.get('href', '#')})")
     else:
         with st.container(border=True):
-            st.subheader("🔗 แหล่งข่าวที่เกี่ยวข้อง (สำหรับอ่านเพิ่มเติม)")
-            st.info("ไม่พบข่าวสารจากสื่อหลักที่มีเนื้อหาตรงกัน หรือไม่มีแหล่งอ้างอิงที่สอดคล้องเพียงพอ")
+            st.subheader("🔗 แหล่งข่าวที่เกี่ยวข้อง")
+            st.info("ไม่พบข่าวสารจากสื่อหลักที่มีเนื้อหาตรงกัน หรือแหล่งข่าวที่สืบค้นได้เป็นคนละเหตุการณ์")
             
     try:
         log_input_data = original_url if original_url else news_content

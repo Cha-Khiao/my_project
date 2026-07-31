@@ -5,30 +5,47 @@ from urllib.parse import quote, unquote, urlparse
 import re
 import concurrent.futures
 
-# ================= โค้ดส่วนจัดการเงื่อนไข =================
-def is_valid_news_title(title: str) -> bool:
+def is_blacklisted_domain(domain: str) -> bool:
+    blacklist = ['tiktok.com', 'facebook.com', 'instagram.com', 'x.com', 'twitter.com', 'pantip.com', 'youtube.com']
+    return any(b in domain.lower() for b in blacklist)
+
+# 💡 เพิ่มพารามิเตอร์ snippet เข้ามา เพื่อให้อ่านเนื้อหาข่าวย่อด้วย
+def calculate_relevance_and_filter(title: str, snippet: str, query: str = "") -> bool:
     if not title or len(title) < 5: return False
     if not re.search(r'[ก-๙]', title): return False
     
-    # 💡 ถอดคำขยะที่อาจบังเอิญไปตรงกับชื่อข่าวจริงๆ ออกไป (เช่น tag, 18+)
     hard_trash = [
         'บทความและข่าว', 'รวมข่าว', 'ข่าวล่าสุด', 'หน้าหลัก', 'ประเด็นร้อน', 'อัปเดตล่าสุด',
-        'แท็ก', 'เรื่องที่เกี่ยวข้อง', 'หน้าแรก', 'เข้าสู่ระบบ', 'สมัครสมาชิก', 'หมวดหมู่',
-        'แคปชั่น', 'คำคม', 'คลิปหลุด', 'หวย', 'เลขเด็ด', 'สลากกินแบ่ง'
+        'แท็ก', 'tags', 'tag', 'เรื่องที่เกี่ยวข้อง', 'archive', 'หน้าแรก', 'เข้าสู่ระบบ', 'สมัครสมาชิก', 'หมวดหมู่',
+        'แคปชั่น', 'คำคม', 'ความรัก', 'วาเลนไทน์', 'สวัสดีวัน', 'คอร์ดเพลง', 'แจกวอลเปเปอร์', 
+        'โปรโมชั่น', 'โค้ดส่วนลด', 'คลิปหลุด', '18+', 'หวย', 'เลขเด็ด', 'ดูดวง', 'ผลบอล', 'สลากกินแบ่ง', 'pantip'
     ]
     if any(trash in title.lower() for trash in hard_trash): 
         return False
         
-    # 💡 ยกเลิกการกรองคำค้นหาที่ตึงเกินไป (Soft-Match) เพื่อปล่อยให้ข่าวทุกบริบทรอดเข้าไปให้ AI อ่านได้
+    # 💡 กฎเหล็ก Strict Keyword Matching (คุณภาพ > ปริมาณ)
+    if query and query != "SKIP_SEARCH":
+        clean_query = re.sub(r'[^\w\sก-๙]', ' ', query)
+        query_words = [w.lower() for w in clean_query.split() if len(w) > 2]
+        
+        # เอาพาดหัวและรายละเอียดมารวมกัน เพื่อหาบริบท
+        text_to_check = (title + " " + snippet).replace(" ", "").lower()
+        
+        if query_words:
+            matched_words = [w for w in query_words if w in text_to_check]
+            
+            # บังคับว่าต้องเจอคีย์เวิร์ดกี่คำ ถึงจะยอมรับว่าเป็น "ข่าวที่เกี่ยวข้อง"
+            if len(query_words) == 1 and len(matched_words) < 1:
+                return False
+            elif len(query_words) == 2 and len(matched_words) < 2:
+                # ค้นหา 2 คำ ต้องเจอทั้ง 2 คำ! (เช่น ชื่อคน + บริบท)
+                return False
+            elif len(query_words) >= 3 and len(matched_words) < len(query_words) - 1:
+                # ค้นหา 3 คำขึ้นไป อนุโลมให้พลาดได้แค่ 1 คำเท่านั้น
+                return False
                 
     return True
 
-def is_blacklisted_domain(domain: str) -> bool:
-    # แบนโซเชียลมีเดียและเว็บบอร์ดขยะไม่ให้เข้ามาเป็นอ้างอิงเด็ดขาด
-    blacklist = ['tiktok.com', 'facebook.com', 'instagram.com', 'x.com', 'twitter.com', 'pantip.com', 'youtube.com']
-    return any(b in domain.lower() for b in blacklist)
-
-# ================= ฟังก์ชันค้นหาหลัก =================
 def search_news_references(query: str, num_results: int = 5) -> list:
     if not query.strip() or query == "SKIP_SEARCH": return []
     
@@ -68,12 +85,13 @@ def search_news_references(query: str, num_results: int = 5) -> list:
                     desc = item.find('description')
                     if desc is not None and desc.text:
                         snippet_soup = BeautifulSoup(desc.text, "html.parser")
-                        snippet = snippet_soup.get_text(strip=True)
+                        snippet = snippet_soup.get_text(separator=" ", strip=True)
                     
                     domain = urlparse(link.lower()).netloc.replace('www.', '')
-                    if not is_blacklisted_domain(domain) and is_valid_news_title(title):
+                    # 💡 ตรวจความเป๊ะของเนื้อหาก่อนดึงเข้าสู่ระบบ
+                    if not is_blacklisted_domain(domain) and calculate_relevance_and_filter(title, snippet, query):
                         res.append({'title': title, 'href': link, 'pub_date': pub_date, 'snippet': snippet if snippet else "Google News", 'domain': domain})
-        except Exception as e: 
+        except Exception: 
             pass
         return res
 
@@ -94,19 +112,21 @@ def search_news_references(query: str, num_results: int = 5) -> list:
                     snippet = ""
                     desc = item.find('description')
                     if desc is not None and desc.text:
-                        snippet = desc.text.strip()
+                        snippet_soup = BeautifulSoup(desc.text, "html.parser")
+                        snippet = snippet_soup.get_text(separator=" ", strip=True)
                         
                     domain = urlparse(link.lower()).netloc.replace('www.', '')
-                    if not is_blacklisted_domain(domain) and is_valid_news_title(title):
+                    # 💡 ตรวจความเป๊ะของเนื้อหาก่อนดึงเข้าสู่ระบบ
+                    if not is_blacklisted_domain(domain) and calculate_relevance_and_filter(title, snippet, query):
                         res.append({'title': title, 'href': link, 'pub_date': pub_date, 'snippet': snippet if snippet else "Bing News", 'domain': domain})
-        except Exception as e: 
+        except Exception: 
             pass
         return res
         
     def fetch_ddg_html():
         res = []
         try:
-            ddg_url = f"https://html.duckduckgo.com/html/?q={quote(query + ' ข่าว')}"
+            ddg_url = f"https://html.duckduckgo.com/html/?q={quote(query)}"
             res_ddg = session.get(ddg_url, timeout=5)
             if res_ddg.status_code == 200:
                 soup = BeautifulSoup(res_ddg.text, 'html.parser')
@@ -126,9 +146,10 @@ def search_news_references(query: str, num_results: int = 5) -> list:
                     if not link or not title: continue
                     
                     domain = urlparse(link.lower()).netloc.replace('www.', '')
-                    if not is_blacklisted_domain(domain) and is_valid_news_title(title):
+                    # 💡 ตรวจความเป๊ะของเนื้อหาก่อนดึงเข้าสู่ระบบ
+                    if not is_blacklisted_domain(domain) and calculate_relevance_and_filter(title, snippet, query):
                         res.append({'title': title, 'href': link, 'pub_date': 'ไม่ระบุ', 'snippet': snippet, 'domain': domain})
-        except Exception as e: 
+        except Exception: 
             pass
         return res
 
@@ -149,7 +170,6 @@ def search_news_references(query: str, num_results: int = 5) -> list:
                     urls_seen.add(item['href'])
                     results.append(item)
                     
-    # 💡 อุดรอยรั่ว! ให้ความสำคัญกับ news.google.com เป็นอันดับ 1 เพื่อไม่ให้ข่าวจริงกระเด็นหลุดไป
     def get_priority(item):
         domain = item.get('domain', '')
         if 'antifakenewscenter.com' in domain or 'sure.factcheckthailand.org' in domain or 'cofact.org' in domain:
