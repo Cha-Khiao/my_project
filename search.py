@@ -1,186 +1,158 @@
-from curl_cffi import requests 
-import xml.etree.ElementTree as ET
-from bs4 import BeautifulSoup
-from urllib.parse import quote, unquote, urlparse
+import os
+import requests
 import re
 import concurrent.futures
+from urllib.parse import urlparse
+from dotenv import load_dotenv
 
-def is_blacklisted_domain(domain: str) -> bool:
-    blacklist = ['tiktok.com', 'facebook.com', 'instagram.com', 'x.com', 'twitter.com', 'pantip.com', 'youtube.com']
-    return any(b in domain.lower() for b in blacklist)
+load_dotenv()
 
-# 💡 เพิ่มพารามิเตอร์ snippet เข้ามา เพื่อให้อ่านเนื้อหาข่าวย่อด้วย
-def calculate_relevance_and_filter(title: str, snippet: str, query: str = "") -> bool:
-    if not title or len(title) < 5: return False
-    if not re.search(r'[ก-๙]', title): return False
+def fetch_serper(endpoint, payload, api_key, timeout=15):
+    headers = {
+        'X-API-KEY': api_key,
+        'Content-Type': 'application/json'
+    }
+    try:
+        response = requests.post(f"https://google.serper.dev/{endpoint}", headers=headers, json=payload, timeout=timeout)
+        response.raise_for_status()
+        data = response.json()
+        
+        results = []
+        items = data.get("organic", []) if endpoint == "search" else data.get("news", [])
+        
+        for item in items:
+            results.append({
+                "title": item.get("title", ""),
+                "link": item.get("link", ""),
+                "snippet": item.get("snippet", ""),
+                "date": item.get("date", "ไม่ระบุ")
+            })
+        return results
+    except Exception as e:
+        print(f"❌ Serper API Error ({endpoint}): {e}")
+        return []
+
+def search_news_references(query: str, num_results: int = 10, must_have_keywords: list = None, source_url: str = "") -> list:
+    if not query.strip() or query == "SKIP_SEARCH": 
+        return []
     
-    hard_trash = [
-        'บทความและข่าว', 'รวมข่าว', 'ข่าวล่าสุด', 'หน้าหลัก', 'ประเด็นร้อน', 'อัปเดตล่าสุด',
-        'แท็ก', 'tags', 'tag', 'เรื่องที่เกี่ยวข้อง', 'archive', 'หน้าแรก', 'เข้าสู่ระบบ', 'สมัครสมาชิก', 'หมวดหมู่',
-        'แคปชั่น', 'คำคม', 'ความรัก', 'วาเลนไทน์', 'สวัสดีวัน', 'คอร์ดเพลง', 'แจกวอลเปเปอร์', 
-        'โปรโมชั่น', 'โค้ดส่วนลด', 'คลิปหลุด', '18+', 'หวย', 'เลขเด็ด', 'ดูดวง', 'ผลบอล', 'สลากกินแบ่ง', 'pantip'
+    serper_api_key = os.getenv("SERPER_API_KEY", "").strip()
+    if not serper_api_key:
+        try:
+            import streamlit as st
+            serper_api_key = st.secrets.get("SERPER_API_KEY", "").strip()
+        except: pass
+        
+    if not serper_api_key:
+        print("❌ System Error: ไม่พบ SERPER_API_KEY ในไฟล์ .env")
+        return []
+
+    # ปล่อยเครื่องหมาย " " ไว้ เพื่อใช้ล็อก Google
+    clean_query = query.replace("'", "")
+    clean_source_url = source_url.split('?')[0].rstrip('/').lower() if source_url else ""
+
+    blacklisted_domains = [
+        'tiktok.com', 'facebook.com', 'instagram.com', 'x.com', 'twitter.com', 'pantip.com', 'youtube.com', 'blockdit.com',
+        'wikipedia.org', 'wiktionary.org', 'longdo.com', 'thai-language.com', 'sanook.com/dictionary', 'dict.'
     ]
-    if any(trash in title.lower() for trash in hard_trash): 
-        return False
-        
-    # 💡 กฎเหล็ก Strict Keyword Matching (คุณภาพ > ปริมาณ)
-    if query and query != "SKIP_SEARCH":
-        clean_query = re.sub(r'[^\w\sก-๙]', ' ', query)
-        query_words = [w.lower() for w in clean_query.split() if len(w) > 2]
-        
-        # เอาพาดหัวและรายละเอียดมารวมกัน เพื่อหาบริบท
-        text_to_check = (title + " " + snippet).replace(" ", "").lower()
-        
-        if query_words:
-            matched_words = [w for w in query_words if w in text_to_check]
-            
-            # บังคับว่าต้องเจอคีย์เวิร์ดกี่คำ ถึงจะยอมรับว่าเป็น "ข่าวที่เกี่ยวข้อง"
-            if len(query_words) == 1 and len(matched_words) < 1:
-                return False
-            elif len(query_words) == 2 and len(matched_words) < 2:
-                # ค้นหา 2 คำ ต้องเจอทั้ง 2 คำ! (เช่น ชื่อคน + บริบท)
-                return False
-            elif len(query_words) >= 3 and len(matched_words) < len(query_words) - 1:
-                # ค้นหา 3 คำขึ้นไป อนุโลมให้พลาดได้แค่ 1 คำเท่านั้น
-                return False
-                
-    return True
 
-def search_news_references(query: str, num_results: int = 5) -> list:
-    if not query.strip() or query == "SKIP_SEARCH": return []
-    
-    whitelist = [
-        'thaipbs.or.th', 'pptvhd36.com', 'ch7.com', 'ch3plus.com', 'one31.net', 
-        'amarintv.com', 'nationtv.tv', 'tnnthailand.com', 'springnews.co.th', 
-        'mcot.net', 'workpointtoday.com', 'gmm25.com', 'jkn18.com', 'thairathtv',
+    trusted_media = [
+        'thaipbs.or.th', 'pptvhd36.com', 'ch7.com', 'news.ch7.com', 'ch3plus.com', '3plusnews.com', 
+        'one31.net', 'amarintv.com', 'nationtv.tv', 'tnnthailand.com', 'springnews.co.th', 
+        'mcot.net', 'tna.mcot.net', 'workpointtoday.com', 'thaich8.com',
         'thairath.co.th', 'khaosod.co.th', 'matichon.co.th', 'dailynews.co.th', 
         'thaipost.net', 'komchadluek.net', 'naewna.com', 'siamrath.co.th', 
-        'banmuang.co.th', 'innnews.co.th', 'lokmatichon.com',
         'bangkokbiznews.com', 'prachachat.net', 'thansettakij.com', 'posttoday.com', 
-        'moneyandbanking.co.th', 'efinancethai.com', 'longtunman.com',
-        'isranews.org', 'hfocus.org', 'ilaw.or.th', 'thaipublica.org', 
-        'factcheckthailand', 'cofact.org', 'sure.factcheckthailand.org',
-        'thestandard.co', 'thematter.co', 'sanook.com', 'kapook.com', 
-        'spacebar.th', 'waymagazine.org', 'themomentum.co', 'feedforfuture.co',
-        'today.line.me', 'bbc.com', 'voicetv.co.th', 'dw.com'
+        'mgronline.com', 'prachatai.com', 'isranews.org', 'thestandard.co', 'thematter.co', 'the101.world', 
+        'thaipublica.org', 'voicetv.co.th', 'moneyandbanking.co.th', 'efinancethai.com', 
+        'bbc.com', 'reuters.com', 'apnews.com', 'sanook.com', 'kapook.com', 'today.line.me'
     ]
-    
-    session = requests.Session(impersonate="chrome")
 
-    def fetch_google_rss():
-        res = []
-        try:
-            rss_url = f"https://news.google.com/rss/search?q={quote(query)}&hl=th&gl=TH&ceid=TH:th"
-            res_rss = session.get(rss_url, timeout=5)
-            if res_rss.status_code == 200:
-                root = ET.fromstring(res_rss.content)
-                for item in root.findall('.//item'):
-                    title = item.find('title').text if item.find('title') is not None else ""
-                    link = item.find('link').text if item.find('link') is not None else ""
-                    
-                    pub_date_tag = item.find('pubDate')
-                    pub_date = pub_date_tag.text if pub_date_tag is not None else "ไม่ระบุ"
-                    
-                    snippet = ""
-                    desc = item.find('description')
-                    if desc is not None and desc.text:
-                        snippet_soup = BeautifulSoup(desc.text, "html.parser")
-                        snippet = snippet_soup.get_text(separator=" ", strip=True)
-                    
-                    domain = urlparse(link.lower()).netloc.replace('www.', '')
-                    # 💡 ตรวจความเป๊ะของเนื้อหาก่อนดึงเข้าสู่ระบบ
-                    if not is_blacklisted_domain(domain) and calculate_relevance_and_filter(title, snippet, query):
-                        res.append({'title': title, 'href': link, 'pub_date': pub_date, 'snippet': snippet if snippet else "Google News", 'domain': domain})
-        except Exception: 
-            pass
-        return res
+    payload_general = {"q": clean_query, "gl": "th", "hl": "th", "num": 15}
+    payload_news = {"q": clean_query, "gl": "th", "hl": "th", "num": 10}
+    payload_gov = {"q": f"{clean_query} site:go.th", "gl": "th", "hl": "th", "num": 10}
 
-    def fetch_bing_rss():
-        res = []
-        try:
-            rss_url = f"https://www.bing.com/news/search?q={quote(query)}&format=rss&cc=th"
-            res_rss = session.get(rss_url, timeout=5)
-            if res_rss.status_code == 200:
-                root = ET.fromstring(res_rss.content)
-                for item in root.findall('.//item'):
-                    title = item.find('title').text if item.find('title') is not None else ""
-                    link = item.find('link').text if item.find('link') is not None else ""
-                    
-                    pub_date_tag = item.find('pubDate')
-                    pub_date = pub_date_tag.text if pub_date_tag is not None else "ไม่ระบุ"
-                    
-                    snippet = ""
-                    desc = item.find('description')
-                    if desc is not None and desc.text:
-                        snippet_soup = BeautifulSoup(desc.text, "html.parser")
-                        snippet = snippet_soup.get_text(separator=" ", strip=True)
-                        
-                    domain = urlparse(link.lower()).netloc.replace('www.', '')
-                    # 💡 ตรวจความเป๊ะของเนื้อหาก่อนดึงเข้าสู่ระบบ
-                    if not is_blacklisted_domain(domain) and calculate_relevance_and_filter(title, snippet, query):
-                        res.append({'title': title, 'href': link, 'pub_date': pub_date, 'snippet': snippet if snippet else "Bing News", 'domain': domain})
-        except Exception: 
-            pass
-        return res
-        
-    def fetch_ddg_html():
-        res = []
-        try:
-            ddg_url = f"https://html.duckduckgo.com/html/?q={quote(query)}"
-            res_ddg = session.get(ddg_url, timeout=5)
-            if res_ddg.status_code == 200:
-                soup = BeautifulSoup(res_ddg.text, 'html.parser')
-                for div in soup.find_all('div', class_='result__body'):
-                    title_tag = div.find('h2', class_='result__title')
-                    if not title_tag: continue
-                    a_tag = title_tag.find('a')
-                    if not a_tag: continue
-                    title = a_tag.text.strip()
-                    link = a_tag.get('href', '')
-                    
-                    snippet_tag = div.find('a', class_='result__snippet')
-                    snippet = snippet_tag.text.strip() if snippet_tag else "DuckDuckGo"
-                    
-                    if "uddg=" in link:
-                        link = unquote(link.split("uddg=")[1].split("&")[0])
-                    if not link or not title: continue
-                    
-                    domain = urlparse(link.lower()).netloc.replace('www.', '')
-                    # 💡 ตรวจความเป๊ะของเนื้อหาก่อนดึงเข้าสู่ระบบ
-                    if not is_blacklisted_domain(domain) and calculate_relevance_and_filter(title, snippet, query):
-                        res.append({'title': title, 'href': link, 'pub_date': 'ไม่ระบุ', 'snippet': snippet, 'domain': domain})
-        except Exception: 
-            pass
-        return res
-
-    results = []
-    urls_seen = set()
-
+    raw_results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-        futures = [
-            executor.submit(fetch_google_rss), 
-            executor.submit(fetch_bing_rss), 
-            executor.submit(fetch_ddg_html)
-        ]
+        future_gov = executor.submit(fetch_serper, "search", payload_gov, serper_api_key)
+        future_news = executor.submit(fetch_serper, "news", payload_news, serper_api_key)
+        future_general = executor.submit(fetch_serper, "search", payload_general, serper_api_key)
         
-        for future in concurrent.futures.as_completed(futures):
-            engine_results = future.result()
-            for item in engine_results:
-                if item['href'] not in urls_seen:
-                    urls_seen.add(item['href'])
-                    results.append(item)
-                    
-    def get_priority(item):
-        domain = item.get('domain', '')
-        if 'antifakenewscenter.com' in domain or 'sure.factcheckthailand.org' in domain or 'cofact.org' in domain:
-            return 0 
-        elif any(wd in domain for wd in whitelist) or 'news.google.com' in domain:
-            return 1
-        return 2
+        raw_results.extend(future_gov.result())
+        raw_results.extend(future_news.result())
+        raw_results.extend(future_general.result())
 
-    results.sort(key=get_priority)
+    urls_seen = set()
+    processed_results = []
     
-    for r in results:
-        r.pop('domain', None)
-                    
-    return results[:num_results]
+    for item in raw_results:
+        title = item.get("title", "").strip()
+        link = item.get("link", "")
+        content = item.get("snippet", "")[:1200]
+        pub_date = item.get("date", "ไม่ระบุ")
+        
+        title_lower = title.lower()
+        link_lower = link.lower()
+        
+        # บล็อกไฟล์ PDF
+        if '[pdf]' in title_lower or 'pdf' in title_lower:
+            continue
+        if re.search(r'\.(pdf|doc|docx|xls|xlsx|ppt|pptx)($|\?)', link_lower):
+            continue
+            
+        if not title or title_lower == 'untitled' or len(title) < 5:
+            continue
+
+        parsed_url = urlparse(link_lower)
+        domain = parsed_url.netloc.replace('www.', '')
+        link_clean = link_lower.split('?')[0].rstrip('/')
+        
+        # บล็อก Generic Homepages อย่าง "Ministry of Interior - กระทรวงมหาดไทย"
+        if not parsed_url.path or parsed_url.path == '/' or parsed_url.path.lower() in ['/home', '/th', '/index']:
+            continue
+        if re.search(r'/(category|topic|tag|tags|author|page)/|\.xml|sitemap', link_lower):
+            continue
+            
+        if clean_source_url and (clean_source_url == link_clean):
+            continue
+            
+        if link in urls_seen or any(b in domain for b in blacklisted_domains):
+            continue
+        if not re.search(r'[ก-๙]', title + content):
+            continue
+            
+        # 💡 Soft-Filter: อย่างน้อยชื่อเรื่องหรือเนื้อหาต้องมีคำบังคับโผล่มาบ้าง กันข่าวหลงทาง
+        text_content = (title + " " + content).lower()
+        if must_have_keywords:
+            has_relevant_word = False
+            for w in must_have_keywords:
+                if w.lower() in text_content:
+                    has_relevant_word = True
+                    break
+            # ถ้าไม่มีคำว่า "สายไฟ" หรือ "สุรินทร์" ในชื่อเรื่องเลย ให้เตะทิ้ง (เช่น โซลาร์เซลล์)
+            if not has_relevant_word:
+                continue 
+        
+        tier = 2
+        if domain.endswith('.go.th') or domain.endswith('.gov') or domain.endswith('.ac.th') or domain.endswith('.or.th'):
+            tier = 0
+        elif 'antifakenewscenter.com' in domain or 'sure.factcheckthailand.org' in domain or 'cofact.org' in domain:
+            tier = 0
+        elif any(wd in domain for wd in trusted_media) or 'news.google.com' in domain:
+            tier = 1
+
+        urls_seen.add(link)
+        processed_results.append({
+            'title': title,
+            'href': link,
+            'pub_date': pub_date,
+            'snippet': content, 
+            'tier': tier 
+        })
+        
+    processed_results.sort(key=lambda x: x['tier'])
+    
+    for r in processed_results:
+        r.pop('tier', None)
+        
+    return processed_results[:num_results]

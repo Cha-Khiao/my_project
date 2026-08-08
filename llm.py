@@ -9,17 +9,17 @@ import pytz
 
 load_dotenv()
 
+HOST_URL = "https://openrouter.ai"
+API_URL = HOST_URL + "/api/v1/chat/completions"
+
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
-AI_MODEL = os.getenv("AI_MODEL", "qwen/qwen-2.5-7b-instruct").strip()
+AI_MODEL = os.getenv("AI_MODEL", "qwen/qwen3-8b").strip()
 
 try:
     import streamlit as st
-    if "OPENROUTER_API_KEY" in st.secrets:
-        OPENROUTER_API_KEY = st.secrets["OPENROUTER_API_KEY"].strip()
-    if "AI_MODEL" in st.secrets:
-        AI_MODEL = st.secrets["AI_MODEL"].strip()
-except Exception:
-    pass
+    if "OPENROUTER_API_KEY" in st.secrets: OPENROUTER_API_KEY = st.secrets["OPENROUTER_API_KEY"].strip()
+    if "AI_MODEL" in st.secrets: AI_MODEL = st.secrets["AI_MODEL"].strip()
+except Exception: pass
 
 def get_current_thai_time():
     tz = pytz.timezone('Asia/Bangkok')
@@ -31,48 +31,43 @@ def sanitize_for_api(text: str) -> str:
     if not text: return ""
     clean = re.sub(r'[<>{}\\]', ' ', text)
     clean = clean.encode('utf-8', 'ignore').decode('utf-8')
-    clean = re.sub(r'\s+', ' ', clean)
-    return clean.strip()
+    return re.sub(r'\s+', ' ', clean).strip()
 
 def parse_json_safely(text: str) -> dict:
     if not text: return {}
+    match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL | re.IGNORECASE)
+    if match:
+        try: return json.loads(match.group(1))
+        except Exception: pass
     match = re.search(r'\{[\s\S]*\}', text)
     if match:
-        json_str = match.group(0)
-        try:
-            return json.loads(json_str)
-        except Exception:
-            pass
-    try:
-        return json.loads(text)
-    except Exception:
-        return {}
+        try: return json.loads(match.group(0))
+        except Exception: pass
+    return {}
 
-def validate_ai_response(parsed_dict: dict) -> dict:
+def validate_ai_response(parsed_dict: dict, raw_output: str = "") -> dict:
     template = {
-        "content_summary": "ไม่สามารถสกัดข้อมูลสรุปได้",
-        "claim_5w1h": "ไม่สามารถสกัด 5W1H ได้",
-        "cross_checking": "ไม่มีข้อมูลอ้างอิงเปรียบเทียบ",
-        "timeline_analysis": "ไม่สามารถระบุช่วงเวลาได้",
+        "verdict_summary": "ไม่สามารถสรุปคำตัดสินได้",
+        "facts": ["ไม่พบข้อมูลส่วนที่เป็นความจริง"],
+        "distortions": ["ไม่พบข้อมูลส่วนที่บิดเบือน หรือข้อมูลไม่เพียงพอ"],
+        "ai_insights": "ระบบไม่สามารถวิเคราะห์เชิงลึกได้อย่างสมบูรณ์",
         "score": 3,
-        "reason": "ระบบไม่สามารถสรุปผลการวิเคราะห์ได้อย่างสมบูรณ์",
         "relevant_ref_ids": []
     }
     
-    if not isinstance(parsed_dict, dict) or not parsed_dict: return template
+    if not isinstance(parsed_dict, dict) or not parsed_dict:
+        if raw_output:
+            template["ai_insights"] = f"❌ โครงสร้างข้อมูลผิดพลาด\n\n[Raw Data]:\n{raw_output[:500]}"
+        return template
+        
     for key in template.keys():
         if key not in parsed_dict or parsed_dict[key] in [None, ""]: parsed_dict[key] = template[key]
             
     try:
         score_str = str(parsed_dict["score"])
         numbers = re.findall(r'\d+', score_str)
-        if numbers:
-            score_val = int(numbers[0])
-            parsed_dict["score"] = max(1, min(5, score_val))
-        else:
-            parsed_dict["score"] = 3
-    except: 
-        parsed_dict["score"] = 3
+        parsed_dict["score"] = max(1, min(5, int(numbers[0]))) if numbers else 3
+    except: parsed_dict["score"] = 3
         
     try:
         rel_val = parsed_dict.get("relevant_ref_ids", "")
@@ -81,217 +76,106 @@ def validate_ai_response(parsed_dict: dict) -> dict:
         else:
             numbers = re.findall(r'\d+', str(rel_val))
             parsed_dict["relevant_ref_ids"] = [int(n) for n in numbers if int(n) != 0]
-    except:
-        parsed_dict["relevant_ref_ids"] = []
+    except: parsed_dict["relevant_ref_ids"] = []
         
-    # ดักกรองเลข 999 
-    parsed_dict["relevant_ref_ids"] = [x for x in parsed_dict["relevant_ref_ids"] if x != 999]
     return parsed_dict
 
+def call_openrouter(prompt: str, system_msg: str) -> dict:
+    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
+    payload = {"model": AI_MODEL, "messages": [{"role": "system", "content": system_msg}, {"role": "user", "content": prompt}], "temperature": 0.0}
+    try:
+        res = requests.post(API_URL, headers=headers, json=payload, timeout=45)
+        res.raise_for_status()
+        content = res.json()['choices'][0]['message']['content']
+        return parse_json_safely(content)
+    except Exception as e:
+        print(f"API Error: {e}")
+        return {}
+
 # =========================================================
-# ⚡ STEP 1: Agent 1 (Search Planner)
+# ⚡ STEP 1: Search Planner (ระบบค้นหาแบบ Advanced Google Operators)
 # =========================================================
 def analyze_intent_and_plan_search(news_text: str) -> tuple:
-    text_chunk = sanitize_for_api(news_text[:2000])
-    
-    prompt = f"""วิเคราะห์ข้อความนี้เพื่อสร้างคีย์เวิร์ดค้นหา (SEO Keywords):
-"{text_chunk}"
-
-หน้าที่ของคุณ:
-1. หากเป็น "เรื่องส่วนตัวล้วนๆ, มุกตลก, นิทาน" ให้ action = "DROP"
-2. หากเป็น "ข่าวลือ, ข่าวสาร, หรือข้อกล่าวอ้าง" ให้ action = "SEARCH"
-3. การสร้าง queries: 🚨 ให้สกัดคีย์เวิร์ด "อย่างน้อย 2-3 คำ" โดยต้องมีทั้ง "ชื่อบุคคล/สถานที่" และ "บริบทเหตุการณ์" (เช่น ["อิงฟ้า เพื่อนรัก น้ำฝน"]) ห้ามตั้งคีย์เวิร์ดกว้างๆ เด็ดขาด!
-
-คุณต้องตอบกลับเป็น JSON รูปแบบนี้เท่านั้น:
-{{
-    "action": "SEARCH หรือ DROP",
-    "reason": "เหตุผลสั้นๆ",
-    "queries": ["คีย์เวิร์ด 1", "คีย์เวิร์ด 2"], 
-    "topic_summary": "สรุปสั้นๆ 1 ประโยค"
-}}
-"""
-    try:
-        response = requests.post(
-            url="https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://factchecker.local",
-                "X-Title": "AI Fact-Checker"
-            },
-            data=json.dumps({
-                "model": AI_MODEL,
-                "messages": [
-                    {"role": "system", "content": "You are an SEO keyword extractor. Generate highly specific, space-separated queries. Output ONLY valid JSON in THAI."},
-                    {"role": "user", "content": prompt}
-                ],
-                "temperature": 0.0,
-                "response_format": {"type": "json_object"}
-            }).encode('utf-8'),
-            timeout=15
-        )
-        response.raise_for_status()
-        res_data = parse_json_safely(response.json()['choices'][0]['message']['content'])
+    text_for_analysis = news_text
+    if "]:\n" in news_text: 
+        text_for_analysis = news_text.split("]:\n")[-1] 
         
-        action = res_data.get("action", "SEARCH").upper()
-        reason = res_data.get("reason", "อนุญาตให้ตรวจสอบอัตโนมัติ")
-        queries = res_data.get("queries", [])
-        topic = res_data.get("topic_summary", "กำลังวิเคราะห์ประเด็น")
-        
-        if action == "DROP": return "DROP", reason, ""
-        if not isinstance(queries, list) or not queries: queries = [text_chunk[:60]]
-        return "SEARCH", queries, topic
-        
-    except Exception:
-        return "SEARCH", [text_chunk[:60]], "ประเด็นทั่วไป"
-
-# =========================================================
-# ⚖️ STEP 2: Agent 3 (Analyzer)
-# =========================================================
-def analyze_news_with_qwen(news_text: str, references: list, current_date: str) -> dict:
+    text_chunk = sanitize_for_api(text_for_analysis[:1500])
     current_time_context = get_current_thai_time()
     
-    ref_text_list = []
-    for i, r in enumerate(references):
-        title = r.get('title', 'ไม่มีหัวข้อ')
-        pub_date = r.get('pub_date', 'ไม่ระบุ')
-        snippet = r.get('snippet', 'ไม่มีข้อมูลย่อ')
-        href = r.get('href', '')
-        ref_text_list.append(f"[รหัสอ้างอิง {i+1}]: พาดหัว: {title} | วันที่: {pub_date} | สรุป: {snippet}")
+    prompt = f"""ข้อความที่ดึงมาจากเว็บไซต์: 
+"{text_chunk}"
+
+หน้าที่: สกัด "คำค้นหาขั้นสูง (Advanced Google Query)" เพื่อบังคับให้ Google หาเฉพาะข่าวที่เกี่ยวข้องกันเป๊ะๆ
+กฎเหล็กขั้นเด็ดขาด:
+1. `search_query`: ⚠️ บังคับให้ใช้เครื่องหมายฟันหนู (Double Quotes) `""` คร่อมคำนาม/สถานที่/เหตุการณ์ที่สำคัญ เพื่อสั่งให้ Google ทำการ Exact Match (เช่น `"พลพีร์" "สายไฟลงดิน" "สุรินทร์"` หรือ `"มท.2" "จัดระเบียบสายไฟ" "สุรินทร์"`) ห้ามแต่งเป็นประโยคยาวๆ ที่ไม่มีฟันหนูเด็ดขาด!
+2. `must_have_keywords`: สกัดชื่อสถานที่หรือบุคคล 1-2 คำ (เช่น ["สุรินทร์", "สายไฟ"]) เพื่อใช้เป็นตาข่ายชั้นที่ 2
+3. หากข้อความเป็นเรื่องทักทาย ให้ action = "DROP"
+
+ตอบกลับเป็น JSON รูปแบบนี้เท่านั้น:
+{{
+    "action": "SEARCH หรือ DROP",
+    "search_query": "คีย์เวิร์ดที่ถูกคร่อมด้วยฟันหนู (Advanced Search)",
+    "must_have_keywords": ["คำบังคับที่1", "คำบังคับที่2"],
+    "topic_summary": "สรุปประเด็นหลัก 1 ประโยค"
+}}"""
+    res_data = call_openrouter(prompt, "You MUST use Double Quotes (\"\") around core entities to force Exact Match on Google. Output strictly in JSON format in THAI.")
+    
+    action = res_data.get("action", "SEARCH").upper()
+    
+    raw_query = res_data.get("search_query", text_chunk[:80])
+    # คลีนคำขยะแต่รักษาฟันหนูไว้
+    clean_query = re.sub(r'(ข่าว|ล่าสุด|รัฐบาลไทย|\||\.\.\.)', '', raw_query).strip()
+    must_have_keywords = res_data.get("must_have_keywords", [])
+    topic_summary = res_data.get("topic_summary", "ตรวจสอบข้อเท็จจริง")
+    
+    if action == "DROP": return "DROP", "", res_data.get("reason", "ไม่ใช่ข่าวสาร"), []
+    return "SEARCH", clean_query, topic_summary, must_have_keywords
+
+# =========================================================
+# ⚖️ STEP 2: The Analyzer
+# =========================================================
+def analyze_news_with_qwen(news_text: str, references: list, current_date: str, source_url: str = "") -> dict:
+    clean_claim = sanitize_for_api(news_text[:2000])
+    ref_text = "\n\n".join([f"[อ้างอิง {i+1}]: {r['title']}\nเนื้อหา: {r.get('snippet', '')}" for i, r in enumerate(references)]) if references else "ไม่มีอ้างอิง"
+    
+    is_official_source = bool(source_url and (".go.th" in source_url.lower() or ".gov" in source_url.lower()))
+    origin_info = f"ดึงมาจากเว็บไซต์ทางการ (Official Source): {source_url}" if is_official_source else "ข้อความทั่วไป / โซเชียลมีเดีย"
+    current_time_context = get_current_thai_time()
+
+    if not references and not is_official_source:
+        return validate_ai_response({"verdict_summary": "ไม่มีแหล่งข่าวใดนำเสนอเรื่องนี้", "score": 1, "ai_insights": "ระบบไม่พบข้อมูลในสารบบสื่อหลัก คาดว่าเป็นข่าวลือที่แต่งขึ้นมาเอง"})
+
+    prompt = f"""คุณคือนักตรวจสอบข้อเท็จจริง (Fact-Checker)
+เวลาปัจจุบัน: {current_time_context}
+ข้อความที่ต้องการตรวจสอบ: "{clean_claim}"
+แหล่งที่มาของข้อความนี้: {origin_info}
+
+หลักฐานที่ค้นพบจาก Search Engine:
+{ref_text}
+
+ขั้นตอนการวิเคราะห์:
+1. หากลิงก์ต้นทางเป็นเว็บไซต์รัฐบาล (.go.th) ให้ยึดเจตนาการประกาศของเว็บนั้นเป็นความจริงสูงสุด
+2. พิจารณาที่ "แก่นเหตุการณ์ (Core Event)" หากแหล่งข่าวเจาะจงรายงานเหตุการณ์ตรงกัน ให้ถือเป็นความจริง 
+
+เกณฑ์คะแนน: 5=จริง 100%, 4=จริงส่วนใหญ่, 3=ก้ำกึ่ง, 2=บิดเบือน, 1=ปลอม/ไร้หลักฐาน
+
+ตอบกลับเป็น JSON รูปแบบนี้เท่านั้น:
+{{
+    "thought": "ตรวจสอบแหล่งข่าวว่ารายงานเหตุการณ์ตรงกับข้อความหรือไม่",
+    "verdict_summary": "ฟันธงสั้นๆ 1 ประโยค",
+    "facts": ["แก่นความจริงที่พบ"],
+    "distortions": ["ข้อบิดเบือน (ถ้ามี)"],
+    "ai_insights": "สรุปเหตุผลที่ให้คะแนน",
+    "relevant_ref_ids": [เฉพาะรหัสอ้างอิงที่เป็น 'ข่าวเจาะจง' และเหตุการณ์ตรงกันเท่านั้น],
+    "score": ตัวเลข 1-5
+}}"""
+    
+    final_result = call_openrouter(prompt, "You are a logical Fact-Checker. Match CORE EVENTS and reject homepage/general links. Output strictly in JSON format in THAI.")
+    if not final_result:
+        return validate_ai_response({"ai_insights": "❌ ข้อผิดพลาด: AI ไม่สามารถประมวลผลได้"})
         
-    ref_text = "\n".join(ref_text_list) if references else "ไม่มีอ้างอิงสืบค้นจากสำนักข่าว"
-    clean_news_text = sanitize_for_api(news_text)
+    return validate_ai_response(final_result)
 
-    prompt = f"""คุณคือนักวิเคราะห์ข้อเท็จจริง AI
-[บริบทเวลาปัจจุบัน]: {current_time_context}
-[เนื้อหาที่ต้องการตรวจสอบ]: "{clean_news_text}"
-[ข้อมูลอ้างอิงที่ระบบหามาได้]: 
-{ref_text}
-
-จงประเมินความน่าเชื่อถือตาม "ตรรกะสากล (Universal Logic)":
-1. การคัดกรองอ้างอิง (relevant_ref_ids): 
-   - 🎯 ให้เลือกรหัสอ้างอิง "เฉพาะ" ข่าวที่ตรงกับเหตุการณ์ที่คุณกำลังตรวจสอบเป๊ะๆ เท่านั้น
-   - 🚨 เน้น "คุณภาพ" มากกว่า "ปริมาณ" หากอ่านแล้วพบว่าเป็นข่าวคนละบริบท (เช่น มีแค่ชื่อคนเหมือนกันแต่คนละเรื่อง) ให้คัดทิ้งทันที ห้ามนำมาใส่เด็ดขาด
-   - หากหาข่าวที่ตรงเป๊ะไม่ได้เลย ให้เปลี่ยนเป็น []
-2. การให้คะแนน (Scoring):
-   - 5 (จริง 95%): หลักฐานสอดคล้องกับเนื้อหาอย่างสมบูรณ์
-   - 4 (จริงส่วนใหญ่ 75%): หลักฐานสนับสนุนเนื้อหาหลัก แต่อาจมีรายละเอียดเล็กน้อยคลาดเคลื่อน
-   - 3 (ก้ำกึ่ง 50%): เรื่องทั่วไปหรือเรื่องส่วนตัวที่อาจเกิดขึ้นได้จริง แต่ยังไม่มีหลักฐานแน่ชัด
-   - 2 (บิดเบือน 25%): หลักฐานชี้ว่ามีการบิดเบือน
-   - 1 (ปลอม 10%): ข่าวระดับชาติ/เหตุการณ์ใหญ่โต ที่หาอ้างอิงยืนยันไม่พบเลย
-
-คุณต้องตอบกลับเป็น JSON รูปแบบนี้เท่านั้น:
-{{
-    "content_summary": "สรุปเนื้อหา",
-    "claim_5w1h": "สกัด ใคร ทำอะไร ที่ไหน เมื่อไหร่ อย่างไร",
-    "cross_checking": "อธิบายว่าอ้างอิงแต่ละอันตรงกับเนื้อหาต้นฉบับหรือไม่",
-    "timeline_analysis": "สรุปไทม์ไลน์",
-    "relevant_ref_ids": [999],
-    "score": 0,
-    "reason": "เหตุผล"
-}}
-🚨 กฎบังคับ: 
-- ให้แทนที่ score เป็นตัวเลข 1, 2, 3, 4 หรือ 5 เท่านั้น ห้ามลอก 0
-- ให้แทนที่ [999] ด้วยอาร์เรย์รหัสอ้างอิงที่ตรงประเด็นจริงๆ เท่านั้น 
-"""
-
-    for attempt in range(2):
-        try:
-            response = requests.post(
-                url="https://openrouter.ai/api/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                    "Content-Type": "application/json",
-                    "HTTP-Referer": "https://factchecker.local",
-                    "X-Title": "AI Fact-Checker"
-                },
-                data=json.dumps({
-                    "model": AI_MODEL,
-                    "messages": [
-                        {"role": "system", "content": "You are an analytical fact-checker. Focus on precision and quality over quantity. Reject unrelated context matches. Output ONLY valid JSON in THAI."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    "temperature": 0.0,
-                    "response_format": {"type": "json_object"}
-                }).encode('utf-8'),
-                timeout=20
-            )
-            response.raise_for_status()
-            content = response.json()['choices'][0]['message']['content']
-            parsed_json = parse_json_safely(content)
-            if parsed_json: return validate_ai_response(parsed_json)
-        except Exception:
-            time.sleep(1)
-
-    return validate_ai_response({})
-
-# =========================================================
-# 🕵️‍♂️ STEP 3: Agent 4 (Critic Agent)
-# =========================================================
 def critic_review_analysis(news_text: str, references: list, initial_analysis: dict) -> dict:
-    clean_news_text = sanitize_for_api(news_text)
-    
-    ref_text_list = []
-    for i, r in enumerate(references):
-        title = r.get('title', 'ไม่มีหัวข้อ')
-        ref_text_list.append(f"[รหัสอ้างอิง {i+1}]: {title}")
-    ref_text = "\n".join(ref_text_list) if references else "ไม่มีอ้างอิง"
-    
-    prompt = f"""คุณคือ Senior Fact-Checker QA ทำหน้าที่ตรวจตรรกะ
-
-[เนื้อหาต้นฉบับ]: "{clean_news_text}"
-[ข้อมูลอ้างอิงที่มี]: 
-{ref_text}
-[ผลการวิเคราะห์จากลูกน้อง]:
-{json.dumps(initial_analysis, ensure_ascii=False, indent=2)}
-
-หน้าที่ของคุณ:
-1. ความเกี่ยวข้อง (Relevance): 🚨 ตรวจสอบ relevant_ref_ids อีกครั้ง! เน้นคุณภาพมากกว่าปริมาณ หากรหัสไหนเป็นข่าวคนละบริบท ให้ลบทิ้งทันที 
-2. ความสมเหตุสมผลของคะแนน (Sanity Check): 
-   - 🚨 หากลูกน้องให้คะแนน 3 (50%) กับ "ข้อกล่าวอ้างที่รุนแรงระดับชาติ" ที่หาอ้างอิงสนับสนุนไม่พบเลย ให้คุณบังคับแก้คะแนนเป็น 1 (10%) 
-   - นอกเหนือจากนั้น ให้เคารพคะแนนเดิมของลูกน้อง
-3. ภาษา: แปลผลลัพธ์ทั้งหมดให้เป็น "ภาษาไทย" 100% 
-
-คุณต้องตอบกลับเป็น JSON รูปแบบนี้เท่านั้น:
-{{
-    "content_summary": "...",
-    "claim_5w1h": "...",
-    "cross_checking": "...",
-    "timeline_analysis": "...",
-    "relevant_ref_ids": [999],
-    "score": 0,
-    "reason": "..."
-}}
-🚨 กฎบังคับ: 
-- ให้แทนที่ score เป็นตัวเลข 1, 2, 3, 4 หรือ 5
-- ให้แทนที่ [999] ด้วยรหัสอ้างอิงที่ตรงประเด็นจริงๆ ที่เหลืออยู่เท่านั้น
-"""
-
-    try:
-        response = requests.post(
-            url="https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://factchecker.local",
-                "X-Title": "AI Fact-Checker"
-            },
-            data=json.dumps({
-                "model": AI_MODEL,
-                "messages": [
-                    {"role": "system", "content": "You are a QA Critic. Enforce strict relevance. Output ONLY valid JSON in THAI."},
-                    {"role": "user", "content": prompt}
-                ],
-                "temperature": 0.0,
-                "response_format": {"type": "json_object"}
-            }).encode('utf-8'),
-            timeout=20
-        )
-        response.raise_for_status()
-        content = response.json()['choices'][0]['message']['content']
-        parsed_json = parse_json_safely(content)
-        if parsed_json: return validate_ai_response(parsed_json)
-    except Exception:
-        return validate_ai_response(initial_analysis)
-
     return validate_ai_response(initial_analysis)
