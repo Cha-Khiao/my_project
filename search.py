@@ -7,106 +7,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# =========================================================
-# 🏛️ WHITELIST แหล่งข้อมูลที่น่าเชื่อถือ (ตามคำแนะนำอาจารย์)
-# อัปเดตล่าสุด: เน้นแหล่งราชการ สื่อหลัก และองค์กรตรวจสอบข้อเท็จจริง
-# =========================================================
-OFFICIAL_SOURCES = [
-    # หน่วยงานตรวจสอบข้อเท็จจริงโดยตรง
-    "antifakenewscenter.com",           # ศูนย์ต่อต้านข่าวปลอม ประเทศไทย
-    "sure.factcheckthailand.org",       # Sure Fact Check Thailand
-    "cofact.org",                       # Cofact Thailand
-    "factcheck.in.th",                  # Fact Check Thailand
-    
-    # เว็บไซต์รัฐบาลไทย (.go.th ทั้งหมด)
-    "go.th",
-    "gov.th",
-    "thaigov.go.th",                    # ทำเนียบรัฐบาล
-    "ddc.moph.go.th",                   # กรมควบคุมโรค
-    "moph.go.th",                       # กระทรวงสาธารณสุข
-    "prachasampai.go.th",               # สำนักข่าวกรมประชาสัมพันธ์
-    "niems.go.th",                      # สถาบันพัฒนาบุคลากร
-    "mcot.net",                         # อสมท
-]
-
-TRUSTED_MEDIA = [
-    # สื่อสาธารณะ
-    "thaipbs.or.th",
-    "tpbs.or.th",
-    
-    # สื่อหนังสือพิมพ์ใหญ่ที่มีมาตรฐาน
-    "thairath.co.th",
-    "khaosod.co.th",
-    "matichon.co.th",
-    "dailynews.co.th",
-    "thaipost.net",
-    "komchadluek.net",
-    "naewna.com",
-    "siamrath.co.th",
-    "bangkokbiznews.com",
-    "prachachat.net",
-    "thansettakij.com",
-    "posttoday.com",
-    "mgronline.com",
-    "prachatai.com",
-    "manager.co.th",
-    "banmuang.co.th",
-    
-    # สื่อออนไลน์คุณภาพ
-    "thestandard.co",
-    "thematter.co",
-    "the101.world",
-    "thaipublica.org",
-    "voicetv.co.th",
-    "nationtv.tv",
-    "workpointtoday.com",
-    "thepeople.co",
-    "themomentum.co",
-    "thaipost.net",
-    
-    # สื่อโทรทัศน์
-    "pptvhd36.com",
-    "ch7.com",
-    "news.ch7.com",
-    "ch3plus.com",
-    "3plusnews.com",
-    "one31.net",
-    "amarintv.com",
-    "channel7.com",
-    
-    # สำนักข่าวต่างประเทศที่รายงานภาษาไทย
-    "bbc.com/thai",
-    "reuters.com",
-    "apnews.com",
-    "cnn.com",
-    "thethaiger.com",
-    
-    # พอร์ทัลข่าวทั่วไป (แต่มีมาตรฐาน)
-    "sanook.com",
-    "kapook.com",
-]
-
-EDUCATIONAL_SOURCES = [
-    "ac.th",                            # มหาวิทยาลัยทั้งหมดในไทย
-    "chula.ac.th",
-    "mahidol.ac.th",
-    "tu.ac.th",
-    "ku.ac.th",
-    "cmu.ac.th",
-    "psu.ac.th",
-    "kmutt.ac.th",
-    "kmitl.ac.th",
-    "sut.ac.th",
-]
-
-# Blacklist - เว็บที่ไม่ควรนำมาเป็นอ้างอิง
-BLACKLIST_DOMAINS = [
-    'youtube.com', 'youtu.be', 'tiktok.com', 'facebook.com', 'instagram.com', 
-    'x.com', 'twitter.com', 'vimeo.com', 'dailymotion.com', 'line.me', 
-    'blockdit.com', 'pantip.com', 'wikipedia.org', 'wiktionary.org', 
-    'longdo.com', 'thai-language.com'
-]
-
 def fetch_exa_api(payload, api_key, timeout=25):
     url = "https://api.exa.ai/search"
     headers = {
@@ -149,30 +49,8 @@ def is_actual_article(url, title):
     if len(title.strip().split()) <= 2 and len(title) < 20: return False
     return True
 
-def get_source_tier(domain: str) -> int:
-    """กำหนดลำดับความน่าเชื่อถือของแหล่งข้อมูล"""
-    domain = domain.lower()
-    
-    # Tier 0: หน่วยงานราชการและองค์กรตรวจสอบข้อเท็จจริง
-    for src in OFFICIAL_SOURCES:
-        if src in domain:
-            return 0
-    
-    # Tier 1: สื่อมวลชนที่น่าเชื่อถือ
-    for src in TRUSTED_MEDIA:
-        if src in domain:
-            return 1
-    
-    # Tier 2: สถาบันการศึกษา
-    for src in EDUCATIONAL_SOURCES:
-        if src in domain:
-            return 2
-    
-    # Tier 3: ทั่วไป (ยังไม่ระบุชัดเจน)
-    return 3
-
-# 💡 ด่านเปรียบเทียบแรก: Python สกัดเนื้อหาที่ไม่ใช่อย่างเด็ดขาด
-def search_news_references(query: str, locations: list, core_keywords: list, target_year: str, num_results: int = 15, source_url: str = "") -> list:
+# 💡 Python ทำการเปรียบเทียบด่านแรก (Pre-Comparison) ตัดขยะทิ้งก่อนส่งถึง AI
+def search_news_references(query: str, locations: list, core_keywords: list, target_year: str, num_results: int = 10, source_url: str = "") -> list:
     if not query.strip() or query == "SKIP_SEARCH": return []
     
     exa_api_key = os.getenv("EXA_API_KEY", "").strip()
@@ -189,43 +67,48 @@ def search_news_references(query: str, locations: list, core_keywords: list, tar
     clean_query = query.replace('"', '').replace("'", "")
     clean_source_url = source_url.split('?')[0].rstrip('/').lower() if source_url else ""
 
-    # สร้าง Payload สำหรับค้นหาแบบแบ่งชั้นความน่าเชื่อถือ
-    payload_official = {
+    blacklisted_domains = [
+        'youtube.com', 'youtu.be', 'tiktok.com', 'facebook.com', 'instagram.com', 'x.com', 'twitter.com', 
+        'vimeo.com', 'dailymotion.com', 'line.me', 'blockdit.com', 'pantip.com',
+        'wikipedia.org', 'wiktionary.org', 'longdo.com', 'thai-language.com'
+    ]
+
+    trusted_media = [
+        'thaipbs.or.th', 'pptvhd36.com', 'ch7.com', 'news.ch7.com', 'ch3plus.com', '3plusnews.com', 
+        'one31.net', 'amarintv.com', 'nationtv.tv', 'tnnthailand.com', 'springnews.co.th', 
+        'mcot.net', 'tna.mcot.net', 'workpointtoday.com', 'thaich8.com',
+        'thairath.co.th', 'khaosod.co.th', 'matichon.co.th', 'dailynews.co.th', 
+        'thaipost.net', 'komchadluek.net', 'naewna.com', 'siamrath.co.th', 
+        'bangkokbiznews.com', 'prachachat.net', 'thansettakij.com', 'posttoday.com', 
+        'mgronline.com', 'prachatai.com', 'isranews.org', 'thestandard.co', 'thematter.co', 'the101.world', 
+        'thaipublica.org', 'voicetv.co.th', 'moneyandbanking.co.th', 'efinancethai.com', 
+        'bbc.com', 'reuters.com', 'apnews.com', 'sanook.com', 'kapook.com', 'today.line.me'
+    ]
+
+    payload_gov = {
         "query": clean_query,
         "type": "auto", 
         "useAutoprompt": False,
-        "numResults": 25,  # เพิ่มจำนวนผลลัพธ์เพื่อให้ครอบคลุมมากขึ้น
-        "includeDomains": OFFICIAL_SOURCES,
-        "contents": { "text": { "maxCharacters": 2500 } }  # เพิ่มข้อความเพื่อวิเคราะห์ได้ละเอียดขึ้น
+        "numResults": 15,
+        "includeDomains": ["go.th", "antifakenewscenter.com", "sure.factcheckthailand.org", "cofact.org"],
+        "contents": { "text": { "maxCharacters": 1500 } }
     }
 
     payload_media = {
         "query": clean_query,
         "type": "auto",
         "useAutoprompt": False,
-        "numResults": 35,  # เพิ่มจำนวนผลลัพธ์
-        "includeDomains": TRUSTED_MEDIA,
-        "contents": { "text": { "maxCharacters": 2500 } }
-    }
-
-    payload_general = {
-        "query": clean_query,
-        "type": "auto",
-        "useAutoprompt": False,
-        "numResults": 25,
-        "excludeDomains": BLACKLIST_DOMAINS,
-        "contents": { "text": { "maxCharacters": 2500 } }
+        "numResults": 20,
+        "includeDomains": trusted_media,
+        "contents": { "text": { "maxCharacters": 1500 } }
     }
 
     raw_results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-        future_official = executor.submit(fetch_exa_api, payload_official, exa_api_key)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        future_gov = executor.submit(fetch_exa_api, payload_gov, exa_api_key)
         future_media = executor.submit(fetch_exa_api, payload_media, exa_api_key)
-        future_general = executor.submit(fetch_exa_api, payload_general, exa_api_key)
-        
-        raw_results.extend(future_official.result())
+        raw_results.extend(future_gov.result())
         raw_results.extend(future_media.result())
-        raw_results.extend(future_general.result())
 
     urls_seen = set()
     processed_results = []
@@ -233,89 +116,61 @@ def search_news_references(query: str, locations: list, core_keywords: list, tar
     for item in raw_results:
         title = item.get("title", "").strip() if item.get("title") else "ข่าวที่เกี่ยวข้อง"
         link = item.get("url", "")
-        content = item.get("text", "")[:2500] 
+        content = item.get("text", "")[:1500] 
         pub_date = item.get("publishedDate", "ไม่ระบุ")
         
         parsed_url = urlparse(link.lower())
         domain = parsed_url.netloc.replace('www.', '')
         link_clean = link.lower().split('?')[0].rstrip('/')
 
-        # กรองไฟล์ขยะและเว็บซ้ำ
         if re.search(r'\.(pdf|doc|docx|xls|xlsx|ppt|pptx)($|\?)', link.lower()): continue
         if '[pdf]' in title.lower() or 'pdf' in title.lower(): continue
         if clean_source_url and (clean_source_url == link_clean): continue
-        if link in urls_seen or any(b in domain for b in BLACKLIST_DOMAINS): continue
+        if link in urls_seen or any(b in domain for b in blacklisted_domains): continue
 
         text_content = (title + " " + content).lower()
         
-        # ⚠️ 1. เปรียบเทียบสถานที่: ใช้ Fuzzy Matching แบบยืดหยุ่น
+        # ⚠️ 1. เปรียบเทียบสถานที่ (Hard Gate): ไม่ตรง = เตะทิ้ง
         if locations:
-            location_match = False
-            for loc in locations:
-                # ตรวจสอบทั้งชื่อเต็มและชื่อย่อ
-                if loc.lower() in text_content:
-                    location_match = True
-                    break
-                # ตรวจสอบคำที่เกี่ยวข้อง (เช่น "กทม" กับ "กรุงเทพมหานคร")
-                if loc.lower() == "กรุงเทพ" and ("กทม" in text_content or "กรุงเทพฯ" in text_content):
-                    location_match = True
-                    break
-            if not location_match:
-                # ถ้าไม่มีสถานที่เลย แต่ยังพอมีความเกี่ยวข้องอยู่ ให้เก็บไว้แต่ลดคะแนน
-                # ไม่ตัดทิ้งทันทีเพื่อไม่ให้พลาดข้อมูลสำคัญ
-                pass
+            if not any(loc.lower() in text_content for loc in locations):
+                continue 
 
-        # ⚠️ 2. เปรียบเทียบปี พ.ศ.: ยืดหยุ่นมากขึ้น
+        # ⚠️ 2. เปรียบเทียบปี พ.ศ. (Strict Regex Time Gate): 
+        # ถ้าเนื้อหามีการระบุปีเก่าๆ แต่ไม่มีปีเป้าหมายเลย = เตะทิ้งแน่นอน 100%
         if target_year:
             try:
                 ty_th = str(target_year).strip()
                 ty_en = str(int(ty_th) - 543)
+                
                 has_target_year = ty_th in text_content or ty_en in text_content
                 
-                # ค้นหาตัวเลขปีทั้งหมดที่ปรากฏในข่าว
+                # ใช้ Regex กวาดหาตัวเลขปีทั้งหมดในเนื้อหาข่าว
                 years_in_text = re.findall(r'\b(25\d{2}|20\d{2})\b', text_content)
-                if years_in_text and not has_target_year:
-                    # อนุญาตให้มีปีอื่นปนได้บ้าง แต่ต้องมีอย่างน้อย 1 ปีที่ใกล้เคียง (±2 ปี)
-                    current_year_int = int(ty_th)
-                    acceptable_years = [current_year_int, current_year_int-1, current_year_int+1, current_year_int-2, current_year_int+2]
-                    has_acceptable_year = any(str(y) in years_in_text for y in acceptable_years)
-                    if not has_acceptable_year:
-                        continue 
+                
+                if years_in_text:
+                    # ถ้ามีการระบุปีในข่าว แต่ในนั้นไม่มีปีเป้าหมาย (เช่น มีแต่ 2561 แต่หา 2569 ไม่เจอ) = ข่าวเก่าล้านเปอร์เซ็นต์
+                    if not has_target_year:
+                        continue # เตะทิ้ง!
             except Exception:
                 pass
 
-        # ⚠️ 3. เปรียบเทียบแก่นเรื่อง: ยืดหยุ่นมากขึ้น
-        match_score = 0
+        # ⚠️ 3. เปรียบเทียบแก่นเรื่อง (Hard Gate)
         if core_keywords:
-            keyword_matches = 0
-            for kw in core_keywords:
-                if kw.lower() in text_content:
-                    keyword_matches += 1
-                    match_score += 3
-                if kw.lower() in title.lower():
-                    match_score += 8
-            
-            # ถ้ามี keyword ตรงอย่างน้อย 1 ใน 3 ก็ถือว่าเกี่ยวข้อง
-            if keyword_matches >= 1:
-                pass  # เก็บไว้
-            else:
-                continue  # ไม่เกี่ยวข้องจริงๆ ค่อยตัดทิ้ง
+            has_core = any(kw.lower() in text_content for kw in core_keywords)
+            if not has_core:
+                continue
 
-        # ประเมินความน่าเชื่อถือของแหล่งที่มา
-        tier = get_source_tier(domain)
-        
-        # เพิ่มคะแนนให้กับแหล่งที่น่าเชื่อถือ
-        if tier == 0:  # ราชการ/Fact-checker
-            match_score += 15
-        elif tier == 1:  # สื่อหลัก
-            match_score += 10
-        elif tier == 2:  # การศึกษา
-            match_score += 8
-        
-        # ตรวจสอบว่าเป็นบทความจริงหรือไม่ (เฉพาะแหล่งทั่วไป)
-        if tier >= 3:
+        is_gov_or_factcheck = domain.endswith('.go.th') or domain.endswith('.gov') or domain.endswith('.ac.th') or domain.endswith('.or.th') or 'antifakenewscenter.com' in domain or 'sure.factcheckthailand.org' in domain or 'cofact.org' in domain
+
+        if not is_gov_or_factcheck:
             if not is_actual_article(link, title): 
                 continue
+
+        tier = 2
+        if is_gov_or_factcheck:
+            tier = 0
+        elif any(wd in domain for wd in trusted_media):
+            tier = 1
 
         urls_seen.add(link)
         processed_results.append({
@@ -323,18 +178,12 @@ def search_news_references(query: str, locations: list, core_keywords: list, tar
             'href': link,
             'pub_date': pub_date[:10] if pub_date != "ไม่ระบุ" else pub_date, 
             'snippet': content,
-            'tier': tier,
-            'match_score': match_score,
-            'domain': domain
+            'tier': tier
         })
         
-    # จัดอันดับด้วยความเกี่ยวข้องและความน่าเชื่อถือ
-    processed_results.sort(key=lambda x: (-x['match_score'], x['tier']))
-    
-    # ตัด tier และ match_score ออกก่อนส่งให้ AI
-    for r in processed_results: 
-        r.pop('tier', None)
-        r.pop('match_score', None)
-        r.pop('domain', None)
+    # จัดอันดับตามความน่าเชื่อถือของสื่อ (ข่าวทุกชิ้นที่รอดมาคือข่าวที่ตรงบริบท 100% แล้ว)
+    processed_results.sort(key=lambda x: x['tier'])
+    for r in processed_results: r.pop('tier', None)
         
+    # ส่ง 10 ลิงก์ที่เจ๋งที่สุดให้ AI เปรียบเทียบเนื้อหาลึกๆ
     return processed_results[:num_results]

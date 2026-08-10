@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import concurrent.futures
 from bs4 import BeautifulSoup
 from urllib.parse import unquote, quote, urlparse, parse_qs
@@ -266,7 +267,7 @@ def force_extract_news_link(social_url: str) -> str:
     try:
         response = requests.get(social_url, impersonate="chrome", timeout=8, allow_redirects=True)
         decoded_html = unquote(response.text)
-        whitelist = ['thairath.co.th', 'khaosod.co.th', 'matichon.co.th', 'dailynews.co.th', 'sanook.com', 'prachachat.net', 'bangkokbiznews.com', 'mgronline.com', 'thaipbs.or.th', 'pptvhd36.com', 'ch7.com', 'thestandard.co', 'workpointtoday.com', 'amarintv.com', 'nationtv.tv', 'tnnthailand.com', 'springnews.co.th']
+        whitelist = ['thairath.co.th', 'khaosod.co.th', 'matichon.co.th', 'dailynews.co.th', 'prachachat.net', 'bangkokbiznews.com', 'mgronline.com', 'thaipbs.or.th', 'pptvhd36.com', 'ch7.com', 'thestandard.co', 'workpointtoday.com', 'amarintv.com', 'nationtv.tv', 'tnnthailand.com', 'springnews.co.th', '77kaoded.com', 'voathai.com', 'xinhuathai.com']
         domain_pattern = "|".join([d.replace('.', r'\.') for d in whitelist])
         regex = rf'https?://(?:www\.)?(?:[a-zA-Z0-9-]+\.)*(?:{domain_pattern})[^\s"\'<>\\]*'
         found_links = re.findall(regex, decoded_html)
@@ -278,6 +279,93 @@ def force_extract_news_link(social_url: str) -> str:
     except Exception:
         return ""
 
+
+def _clean_extracted_text(text: str) -> str:
+    text = re.sub(r'!\[[^\]]*\]\([^)]*\)', ' ', str(text or ''))
+    text = re.sub(r'\[([^\]]+)\]\([^)]*\)', r'\1', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text[:12000]
+
+
+def _article_json_ld_candidates(value):
+    candidates = []
+    if isinstance(value, list):
+        for item in value:
+            candidates.extend(_article_json_ld_candidates(item))
+    elif isinstance(value, dict):
+        graph = value.get('@graph')
+        if graph:
+            candidates.extend(_article_json_ld_candidates(graph))
+        raw_type = value.get('@type', '')
+        types = raw_type if isinstance(raw_type, list) else [raw_type]
+        if any(article_type in ['Article', 'NewsArticle', 'ReportageNewsArticle'] for article_type in types):
+            body = value.get('articleBody', '')
+            headline = value.get('headline', '')
+            if body:
+                candidates.append(f"{headline}\n{body}".strip())
+    return candidates
+
+
+def _content_quality_score(text: str) -> float:
+    text = _clean_extracted_text(text)
+    if not text:
+        return 0.0
+    length_score = min(len(text), 6000)
+    sentence_score = min(1000, len(re.findall(r'[.!?。]|ครับ|ค่ะ|ว่า|โดย|เมื่อ', text)) * 20)
+    boilerplate_hits = len(re.findall(
+        r'(cookie|privacy policy|สมัครสมาชิก|เข้าสู่ระบบ|เมนู|หน้าหลัก|ติดตามเรา|สงวนลิขสิทธิ์)',
+        text,
+        re.IGNORECASE
+    ))
+    return length_score + sentence_score - (boilerplate_hits * 120)
+
+
+def _extract_article_text_from_html(html: str) -> str:
+    soup = BeautifulSoup(html or '', 'html.parser')
+    candidates = []
+
+    for script in soup.find_all('script', attrs={'type': 'application/ld+json'}):
+        try:
+            candidates.extend(
+                (value, 1800.0)
+                for value in _article_json_ld_candidates(json.loads(script.string or script.get_text()))
+            )
+        except Exception:
+            pass
+
+    for element in soup(["script", "style", "nav", "header", "footer", "aside", "noscript", "form", "button"]):
+        element.extract()
+
+    selectors = [
+        ('[itemprop="articleBody"]', 1800.0), ('article', 1500.0), ('main', 900.0),
+        ('.article-content', 1400.0), ('.article-body', 1400.0),
+        ('.entry-content', 1200.0), ('.post-content', 1200.0),
+        ('.story-content', 1200.0), ('.news-content', 1200.0),
+        ('#article-content', 1400.0), ('#article-body', 1400.0)
+    ]
+    for selector, structure_bonus in selectors:
+        for node in soup.select(selector):
+            text = node.get_text(separator=' ', strip=True)
+            if len(text) >= 100:
+                candidates.append((text, structure_bonus))
+
+    body_text = soup.get_text(separator=' ', strip=True)
+    if body_text:
+        candidates.append((body_text, 0.0))
+
+    cleaned_candidates = []
+    for value, structure_bonus in candidates:
+        clean_value = _clean_extracted_text(value)
+        if clean_value:
+            cleaned_candidates.append((clean_value, structure_bonus))
+    if not cleaned_candidates:
+        return ""
+    best_text, _ = max(
+        cleaned_candidates,
+        key=lambda item: _content_quality_score(item[0]) + item[1]
+    )
+    return best_text
+
 def fetch_with_fallback(url: str) -> str:
     anti_bot_patterns = r'(cloudflare|500 internal server error|403 forbidden|access denied|captcha|not acceptable|checking your browser|security check|just a moment|log in to facebook|เข้าสู่ระบบ|error 404|404 not found|page not found|ไม่พบหน้านี้|ไม่พบเนื้อหา|content not found|this page isn\'t available|หน้านี้ไม่พร้อมใช้งาน|อาจเสียหรือถูกลบไปแล้ว)'
     
@@ -288,10 +376,7 @@ def fetch_with_fallback(url: str) -> str:
             if res.status_code == 200:
                 if res.encoding is None or res.encoding.lower() == 'iso-8859-1':
                     res.encoding = res.apparent_encoding or 'utf-8'
-                soup = BeautifulSoup(res.text, 'html.parser')
-                for element in soup(["script", "style", "nav", "header", "footer", "aside", "noscript"]): 
-                    element.extract()
-                clean_text = re.sub(r'\s+', ' ', soup.get_text(separator=' ', strip=True)).strip()
+                clean_text = _extract_article_text_from_html(res.text)
                 if len(clean_text) > 100 and not re.search(anti_bot_patterns, clean_text, re.IGNORECASE):
                     return clean_text
         except Exception:
@@ -303,7 +388,7 @@ def fetch_with_fallback(url: str) -> str:
             jina_url = f"https://r.jina.ai/{url}"
             response = requests.get(jina_url, impersonate="chrome", headers={"Accept": "text/plain", "X-Retain-Images": "none"}, timeout=8)
             if response.status_code == 200:
-                content = response.text
+                content = _clean_extracted_text(response.text)
                 if len(content.strip()) > 100 and not re.search(anti_bot_patterns, content, re.IGNORECASE): 
                     return content
         except Exception:
@@ -312,10 +397,13 @@ def fetch_with_fallback(url: str) -> str:
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         futures = [executor.submit(fetch_native), executor.submit(fetch_jina)]
+        candidates = []
         for future in concurrent.futures.as_completed(futures):
             res = future.result()
             if res:
-                return res
+                candidates.append(res)
+        if candidates:
+            return max(candidates, key=_content_quality_score)
                 
     return ""
 

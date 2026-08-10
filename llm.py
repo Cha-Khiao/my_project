@@ -93,7 +93,7 @@ def call_openrouter(prompt: str, system_msg: str) -> dict:
         return {}
 
 # =========================================================
-# ⚡ STEP 1: Search Planner - มีการขยายคำค้นหา (Query Expansion)
+# ⚡ STEP 1: Search Planner
 # =========================================================
 def analyze_intent_and_plan_search(news_text: str) -> tuple:
     text_for_analysis = news_text
@@ -107,26 +107,24 @@ def analyze_intent_and_plan_search(news_text: str) -> tuple:
     prompt = f"""ข้อความที่ต้องการตรวจสอบ: 
 "{text_chunk}"
 
-หน้าที่: สกัด "ประโยคค้นหา" และ "ข้อมูลสำหรับคัดกรองเบื้องต้น" พร้อมสร้างคำค้นหาเพิ่มเติม
+หน้าที่: สกัด "ข้อมูลเพื่อนำไปคัดกรองข่าว" (Filter Parameters)
 กฎ:
-1. `search_query`: แต่งประโยคเพื่อค้นหาเนื้อหาที่แท้จริง (ใส่ชื่อสถานที่หรือหน่วยงานลงไปในประโยคนี้ได้เลย เพื่อการค้นหาที่เจาะจง)
-2. `expanded_queries`: สร้างคำค้นหาเพิ่มเติม 2-3 แบบ ที่ครอบคลุมมุมมองต่างๆ ของเรื่องนี้ (เช่น ชื่อทางการ, ชื่อย่อ, คำที่เกี่ยวข้อง)
-3. `locations`: สกัด "สถานที่ระดับมหภาค" (ชื่อจังหวัด) เพื่อใช้คัดกรอง หากไม่มีให้เว้นว่าง []
-4. `core_keywords`: สกัดแก่นของเรื่อง (3-5 คำ)
-5. `target_year`: สกัด "ปี พ.ศ." (ตัวเลข 4 หลัก) ถ้าไม่มีระบุในข้อความ ให้ใช้ '{current_year_th}'
-6. หากข้อความไม่มีเนื้อหาสาระ ให้ action = "DROP"
+1. `search_query`: ประโยคค้นหาข่าว (ห้ามใส่เลขปีลงในประโยคนี้)
+2. `locations`: สกัด "สถานที่/จังหวัด"
+3. `core_keywords`: สกัดแก่นของเรื่อง 2-3 คำ
+4. `target_year`: สกัด "ปี พ.ศ." (ตัวเลข 4 หลัก) ถ้าไม่มีให้ใช้ '{current_year_th}'
+5. หากข้อความไม่มีเนื้อหาสาระ ให้ action = "DROP"
 
 ตอบกลับเป็น JSON รูปแบบนี้เท่านั้น:
 {{
     "action": "SEARCH หรือ DROP",
-    "search_query": "ประโยคค้นหาหลัก",
-    "expanded_queries": ["คำค้นหาที่ 2", "คำค้นหาที่ 3"],
+    "search_query": "ประโยคค้นหา",
     "locations": ["จังหวัด"],
-    "core_keywords": ["คำแก่นเรื่อง", "รายละเอียดเฉพาะ(ถ้ามี)"],
+    "core_keywords": ["คำแก่นเรื่อง1", "คำพ้อง2"],
     "target_year": "2569",
     "topic_summary": "สรุปประเด็นหลัก 1 ประโยค"
 }}"""
-    res_data = call_openrouter(prompt, "Extract exact search parameters with query expansion. Output strictly in JSON format in THAI.")
+    res_data = call_openrouter(prompt, "Extract strict filter parameters. Output strictly in JSON format in THAI.")
     
     action = res_data.get("action", "SEARCH").upper()
     raw_query = res_data.get("search_query", text_chunk[:80])
@@ -135,14 +133,13 @@ def analyze_intent_and_plan_search(news_text: str) -> tuple:
     locations = res_data.get("locations", [])
     core_keywords = res_data.get("core_keywords", [])
     target_year = str(res_data.get("target_year", current_year_th)).strip()
-    topic_summary = res_data.get("topic_summary", "เปรียบเทียบและวิเคราะห์เนื้อหา")
-    expanded_queries = res_data.get("expanded_queries", [])
+    topic_summary = res_data.get("topic_summary", "ประเมินและเปรียบเทียบข้อเท็จจริง")
     
-    if action == "DROP": return "DROP", "", res_data.get("reason", "ไม่ใช่เนื้อหาที่สามารถเปรียบเทียบได้"), [], [], "", []
-    return "SEARCH", clean_query, topic_summary, locations, core_keywords, target_year, expanded_queries
+    if action == "DROP": return "DROP", "", res_data.get("reason", "ไม่ใช่เนื้อหาที่สามารถเปรียบเทียบได้"), [], [], ""
+    return "SEARCH", clean_query, topic_summary, locations, core_keywords, target_year
 
 # =========================================================
-# ⚖️ STEP 2: The Analyzer (ระบบเปรียบเทียบที่ยุติธรรมและไร้ขยะ)
+# ⚖️ STEP 2: The Analyzer (ระบบเปรียบเทียบเนื้อหาที่ยุติธรรมที่สุด)
 # =========================================================
 def analyze_news_with_qwen(news_text: str, references: list, current_date: str, source_url: str = "") -> dict:
     clean_claim = sanitize_for_api(news_text[:2000])
@@ -152,40 +149,38 @@ def analyze_news_with_qwen(news_text: str, references: list, current_date: str, 
     origin_info = f"ดึงมาจากเว็บไซต์ทางการ (Official Source): {source_url}" if is_official_source else "ข้อความทั่วไป / โซเชียลมีเดีย"
     current_time_context = get_current_thai_time()
 
-    # 💡 สอน AI ให้คัดกรองขยะออก และเปรียบเทียบอย่างยุติธรรมที่สุด
-    prompt = f"""คุณคือ AI ผู้เชี่ยวชาญด้านการวิเคราะห์และเปรียบเทียบข้อมูล (Multi-Source Comparative Analyst)
-หน้าที่ของคุณคือเปรียบเทียบข้อความต้นฉบับ กับแหล่งอ้างอิงที่ระบบคัดกรองมาให้
+    # 💡 สอน AI ห้ามหักคะแนนถ้าผู้ใช้พูดกว้างๆ และต้องประเมินอย่างเป็นธรรม
+    prompt = f"""คุณคือ AI ผู้เชี่ยวชาญด้านการวิเคราะห์และเปรียบเทียบเนื้อหาข่าว (Comparative Analyst)
 
 เวลาปัจจุบัน: {current_time_context}
 [ข้อความต้นฉบับ]: "{clean_claim}"
 [แหล่งที่มา]: {origin_info}
 
-[แหล่งข้อมูลอ้างอิงที่ระบบจัดอันดับมาให้]:
+[แหล่งข้อมูลอ้างอิงที่ระบบคัดกรองมาอย่างเข้มงวดแล้ว]:
 {ref_text}
 
-กระบวนการเปรียบเทียบระดับลึก (Deep Comparative Process):
-1. 🗑️ คัดกรองแหล่งอ้างอิง (Semantic Filtering): อ่านอ้างอิงทีละรายการ หากคุณพบว่าอ้างอิงใดเป็น "ข่าวคนละเหตุการณ์" หรือ "คนละบริบทอย่างชัดเจน" ให้คุณ "เพิกเฉย" ต่ออ้างอิงนั้น และห้ามนำรหัสนั้นมาใส่ใน relevant_ref_ids เด็ดขาด! (เราต้องการเปรียบเทียบเนื้อหาของข่าวจริงๆ ไม่ใช่เอาอะไรก็ได้มาเป็นอ้างอิง)
-2. ⚖️ เปรียบเทียบความสอดคล้อง (Supported vs Conflicting):
-   - สำหรับอ้างอิงที่ 'เกี่ยวข้อง': หากข้อความต้นฉบับพูดกว้างๆ (เช่น ระดับจังหวัด) แต่ข่าวลงลึก (เช่น ระบุหมู่บ้าน) ให้ถือว่า "สอดคล้องกัน (Supported)" ห้ามมองว่าเป็นข้อขัดแย้ง!
-   - ความขัดแย้ง (Conflicting) จะเกิดขึ้นก็ต่อเมื่อ ข้อมูลในเรื่องเดียวกันให้รายละเอียดตัวเลข หรือผลลัพธ์ที่สวนทางกันอย่างมีนัยสำคัญ
-3. 📌 การดึงรหัสอ้างอิง (relevant_ref_ids): ⚠️ ระบุเฉพาะรหัสของแหล่งอ้างอิงที่ "เกี่ยวข้องและใช้นำมาเปรียบเทียบจริงๆ" เท่านั้น หากพบว่าไม่มีแหล่งอ้างอิงใดตรงกับเหตุการณ์เลย ให้เว้นว่าง [] ไว้
-4. 🏛️ น้ำหนักข้อมูล: หากแหล่งที่มาของข้อความคือ เว็บรัฐบาล (Official Source) ให้ประเมินว่ามีความน่าเชื่อถือสูงสุด (Score=5) เสมอ
+กระบวนการเปรียบเทียบเนื้อหา (Fair Content Comparison):
+1. ⚖️ เปรียบเทียบความสอดคล้อง: ข้อความต้นฉบับสอดคล้องกับข่าวที่ระบบหามาได้หรือไม่?
+   - ⚠️ กฎความยุติธรรม: หากข้อความต้นฉบับอธิบายเรื่องแบบกว้างๆ (เช่น ระบุแค่จังหวัด) แต่แหล่งอ้างอิงระบุลึกถึงระดับหมู่บ้าน/ตำบล ให้ถือว่า "สอดคล้องกัน (Supported)" ห้ามมองว่าเป็นความขัดแย้ง และห้ามนำมาลดคะแนนเด็ดขาด!
+   - ❌ ความขัดแย้ง (Conflicting): คือข้อมูลที่สวนทางกันจริงๆ (เช่น ระบุปีผิด, หรือบอกว่างบ 10 ล้าน แต่ความจริง 100 ล้าน)
+2. 📌 relevant_ref_ids: ให้ดึงรหัสของแหล่งอ้างอิงที่รายงานเรื่องเดียวกันกับข้อความต้นฉบับ มาแสดงให้ผู้ใช้เห็นว่าเราเทียบกับอะไร
+3. 🏛️ น้ำหนักข้อมูล: หากแหล่งที่มาของข้อความคือ เว็บรัฐบาล (Official Source) ให้ประเมินว่ามีความน่าเชื่อถือสูงสุด (Score=5) เสมอ
 
 เกณฑ์คะแนน (ความสอดคล้อง): 
-5=เนื้อหาสอดคล้องกับสื่อหลักอย่างสมบูรณ์, 4=สอดคล้องส่วนใหญ่, 3=ก้ำกึ่ง/ไม่ชัดเจน, 2=พบการบิดเบือนข้อมูลจากสื่อหลัก, 1=ขัดแย้งอย่างสิ้นเชิง หรือไม่มีแหล่งอ้างอิงที่เกี่ยวข้องเลย
+5=เนื้อหาสอดคล้องกับสื่อหลักอย่างสมบูรณ์, 4=สอดคล้องส่วนใหญ่, 3=ก้ำกึ่ง/ไม่ชัดเจน, 2=พบการบิดเบือนข้อมูลจากสื่อหลัก, 1=ขัดแย้งอย่างสิ้นเชิง หรือไม่มีแหล่งอ้างอิงสอดคล้องเลย
 
 ตอบกลับเป็น JSON รูปแบบนี้เท่านั้น:
 {{
-    "thought": "คัดกรองข่าวคนละบริบททิ้งไปเงียบๆ และเปรียบเทียบเฉพาะข่าวที่เกี่ยวข้องกับเหตุการณ์นี้จริงๆ",
+    "thought": "เปรียบเทียบเนื้อหา หากต้นฉบับกว้างกว่าแหล่งอ้างอิงให้ถือว่าสอดคล้องกัน ห้ามหักคะแนน",
     "verdict_summary": "สรุปผลการเปรียบเทียบ 1 ประโยค",
     "supported_points": ["ประเด็นที่สอดคล้องกับแหล่งอ้างอิง"],
     "conflicting_points": ["ประเด็นที่ขัดแย้งอย่างชัดเจน (หากไม่มี ให้เว้นว่าง)"],
-    "comparative_analysis": "อธิบายผลการเปรียบเทียบ หากไม่พบอ้างอิงที่สอดคล้องให้สรุปว่าขาดหลักฐานสนับสนุน",
-    "relevant_ref_ids": [ใส่เฉพาะรหัสอ้างอิงของข่าวที่เกี่ยวข้องกับเหตุการณ์นี้จริงๆ เท่านั้น],
+    "comparative_analysis": "อธิบายผลการเปรียบเทียบอย่างเป็นเหตุเป็นผล",
+    "relevant_ref_ids": [ระบุรหัสอ้างอิงของข่าวที่นำมาเปรียบเทียบและสอดคล้องกับเหตุการณ์],
     "score": ตัวเลข 1-5
 }}"""
     
-    final_result = call_openrouter(prompt, "You are a Comparative Analyst. Filter out unrelated documents silently. Perform a FAIR comparison on truly related documents. Output strictly in JSON format in THAI.")
+    final_result = call_openrouter(prompt, "You are a Comparative Analyst. Perform a FAIR comparison: DO NOT penalize the text if it lacks micro-details present in the references. Output strictly in JSON format in THAI.")
     if not final_result:
         return validate_ai_response({"comparative_analysis": "❌ ข้อผิดพลาด: AI ไม่สามารถประมวลผลการเปรียบเทียบได้"})
         
