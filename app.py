@@ -20,7 +20,23 @@ def cached_extract_text(url): return extract_text_from_url(url)
 def cached_plan_search(text): return analyze_intent_and_plan_search(text)
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def cached_search(query, locations, core_keywords, target_year, source_url=""): return search_news_references(query, locations, core_keywords, target_year, num_results=10, source_url=source_url)
+def cached_search(query, locations, core_keywords, target_year, source_url="", expanded_queries=None): 
+    if expanded_queries is None:
+        expanded_queries = []
+    # รวมคำค้นหาหลักและคำค้นหาที่ขยายไว้
+    all_queries = [query] + expanded_queries
+    all_results = []
+    seen_urls = set()
+    
+    for q in all_queries:
+        if q and q.strip():
+            results = search_news_references(q, locations, core_keywords, target_year, num_results=10, source_url=source_url)
+            for r in results:
+                if r.get('href') not in seen_urls:
+                    all_results.append(r)
+                    seen_urls.add(r.get('href'))
+    
+    return all_results[:15]  # จำกัดผลลัพธ์สูงสุด 15 รายการ
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def cached_analyze(news_text, references, current_date, source_url=""): return analyze_news_with_qwen(news_text, references, current_date, source_url)
@@ -208,7 +224,7 @@ if news_content:
             smooth_progress(progress_bar, 5, 25, "🧠 AI กำลังสกัดคำสำคัญเพื่อวางแผนการเปรียบเทียบ (25%)")
             text_for_keyword = news_content.split("]:\n")[-1] if "[เนื้อหาข่าวจริง" in news_content else news_content
             
-            action, search_query, topic_summary, locations, core_keywords, target_year = cached_plan_search(text_for_keyword)
+            action, search_query, topic_summary, locations, core_keywords, target_year, expanded_queries = cached_plan_search(text_for_keyword)
 
             if action == "DROP":
                 total_time_taken = round(time.time() - start_process_time, 2)
@@ -222,8 +238,8 @@ if news_content:
                 smooth_progress(progress_bar, 25, 55, "🌐 ระบบกำลังสืบค้นและคัดกรองข้อมูลขยะทิ้ง (55%)")
                 
                 references = []
-                if search_query:
-                    references = cached_search(search_query, locations, core_keywords, target_year, original_url)
+                if search_query or expanded_queries:
+                    references = cached_search(search_query, locations, core_keywords, target_year, original_url, expanded_queries)
                 
                 st.markdown(f"🔎 **ดึงแหล่งข้อมูลมาได้ {len(references)} แหล่ง เพื่อเข้าสู่กระบวนการเปรียบเทียบ**")
                 smooth_progress(progress_bar, 55, 85, "⚖️ AI กำลังวิเคราะห์และเปรียบเทียบเนื้อหา (85%)")

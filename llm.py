@@ -93,7 +93,7 @@ def call_openrouter(prompt: str, system_msg: str) -> dict:
         return {}
 
 # =========================================================
-# ⚡ STEP 1: Search Planner
+# ⚡ STEP 1: Search Planner - มีการขยายคำค้นหา (Query Expansion)
 # =========================================================
 def analyze_intent_and_plan_search(news_text: str) -> tuple:
     text_for_analysis = news_text
@@ -107,24 +107,26 @@ def analyze_intent_and_plan_search(news_text: str) -> tuple:
     prompt = f"""ข้อความที่ต้องการตรวจสอบ: 
 "{text_chunk}"
 
-หน้าที่: สกัด "ประโยคค้นหา" และ "ข้อมูลสำหรับคัดกรองเบื้องต้น"
+หน้าที่: สกัด "ประโยคค้นหา" และ "ข้อมูลสำหรับคัดกรองเบื้องต้น" พร้อมสร้างคำค้นหาเพิ่มเติม
 กฎ:
 1. `search_query`: แต่งประโยคเพื่อค้นหาเนื้อหาที่แท้จริง (ใส่ชื่อสถานที่หรือหน่วยงานลงไปในประโยคนี้ได้เลย เพื่อการค้นหาที่เจาะจง)
-2. `locations`: สกัด "สถานที่ระดับมหภาค" (ชื่อจังหวัด) เพื่อใช้คัดกรอง หากไม่มีให้เว้นว่าง []
-3. `core_keywords`: สกัดแก่นของเรื่อง (3-5 คำ)
-4. `target_year`: สกัด "ปี พ.ศ." (ตัวเลข 4 หลัก) ถ้าไม่มีระบุในข้อความ ให้ใช้ '{current_year_th}'
-5. หากข้อความไม่มีเนื้อหาสาระ ให้ action = "DROP"
+2. `expanded_queries`: สร้างคำค้นหาเพิ่มเติม 2-3 แบบ ที่ครอบคลุมมุมมองต่างๆ ของเรื่องนี้ (เช่น ชื่อทางการ, ชื่อย่อ, คำที่เกี่ยวข้อง)
+3. `locations`: สกัด "สถานที่ระดับมหภาค" (ชื่อจังหวัด) เพื่อใช้คัดกรอง หากไม่มีให้เว้นว่าง []
+4. `core_keywords`: สกัดแก่นของเรื่อง (3-5 คำ)
+5. `target_year`: สกัด "ปี พ.ศ." (ตัวเลข 4 หลัก) ถ้าไม่มีระบุในข้อความ ให้ใช้ '{current_year_th}'
+6. หากข้อความไม่มีเนื้อหาสาระ ให้ action = "DROP"
 
 ตอบกลับเป็น JSON รูปแบบนี้เท่านั้น:
 {{
     "action": "SEARCH หรือ DROP",
-    "search_query": "ประโยคค้นหา",
+    "search_query": "ประโยคค้นหาหลัก",
+    "expanded_queries": ["คำค้นหาที่ 2", "คำค้นหาที่ 3"],
     "locations": ["จังหวัด"],
     "core_keywords": ["คำแก่นเรื่อง", "รายละเอียดเฉพาะ(ถ้ามี)"],
     "target_year": "2569",
     "topic_summary": "สรุปประเด็นหลัก 1 ประโยค"
 }}"""
-    res_data = call_openrouter(prompt, "Extract exact search parameters. Output strictly in JSON format in THAI.")
+    res_data = call_openrouter(prompt, "Extract exact search parameters with query expansion. Output strictly in JSON format in THAI.")
     
     action = res_data.get("action", "SEARCH").upper()
     raw_query = res_data.get("search_query", text_chunk[:80])
@@ -134,9 +136,10 @@ def analyze_intent_and_plan_search(news_text: str) -> tuple:
     core_keywords = res_data.get("core_keywords", [])
     target_year = str(res_data.get("target_year", current_year_th)).strip()
     topic_summary = res_data.get("topic_summary", "เปรียบเทียบและวิเคราะห์เนื้อหา")
+    expanded_queries = res_data.get("expanded_queries", [])
     
-    if action == "DROP": return "DROP", "", res_data.get("reason", "ไม่ใช่เนื้อหาที่สามารถเปรียบเทียบได้"), [], [], ""
-    return "SEARCH", clean_query, topic_summary, locations, core_keywords, target_year
+    if action == "DROP": return "DROP", "", res_data.get("reason", "ไม่ใช่เนื้อหาที่สามารถเปรียบเทียบได้"), [], [], "", []
+    return "SEARCH", clean_query, topic_summary, locations, core_keywords, target_year, expanded_queries
 
 # =========================================================
 # ⚖️ STEP 2: The Analyzer (ระบบเปรียบเทียบที่ยุติธรรมและไร้ขยะ)

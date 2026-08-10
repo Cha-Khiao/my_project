@@ -9,23 +9,32 @@ load_dotenv()
 
 # =========================================================
 # 🏛️ WHITELIST แหล่งข้อมูลที่น่าเชื่อถือ (ตามคำแนะนำอาจารย์)
+# อัปเดตล่าสุด: เน้นแหล่งราชการ สื่อหลัก และองค์กรตรวจสอบข้อเท็จจริง
 # =========================================================
 OFFICIAL_SOURCES = [
-    "antifakenewscenter.com",
-    "sure.factcheckthailand.org",
-    "cofact.org",
-    "go.th",  # เว็บไซต์รัฐบาลไทยทั้งหมด
+    # หน่วยงานตรวจสอบข้อเท็จจริงโดยตรง
+    "antifakenewscenter.com",           # ศูนย์ต่อต้านข่าวปลอม ประเทศไทย
+    "sure.factcheckthailand.org",       # Sure Fact Check Thailand
+    "cofact.org",                       # Cofact Thailand
+    "factcheck.in.th",                  # Fact Check Thailand
+    
+    # เว็บไซต์รัฐบาลไทย (.go.th ทั้งหมด)
+    "go.th",
     "gov.th",
-    "ddc.moph.go.th",  # กรมควบคุมโรค
-    "thaigov.go.th",  # ทำเนียบรัฐบาล
-    "prachasampai.go.th",  # สำนักข่าวกรมประชาสัมพันธ์
+    "thaigov.go.th",                    # ทำเนียบรัฐบาล
+    "ddc.moph.go.th",                   # กรมควบคุมโรค
+    "moph.go.th",                       # กระทรวงสาธารณสุข
+    "prachasampai.go.th",               # สำนักข่าวกรมประชาสัมพันธ์
+    "niems.go.th",                      # สถาบันพัฒนาบุคลากร
+    "mcot.net",                         # อสมท
 ]
 
 TRUSTED_MEDIA = [
     # สื่อสาธารณะ
     "thaipbs.or.th",
     "tpbs.or.th",
-    # สื่อหนังสือพิมพ์ใหญ่
+    
+    # สื่อหนังสือพิมพ์ใหญ่ที่มีมาตรฐาน
     "thairath.co.th",
     "khaosod.co.th",
     "matichon.co.th",
@@ -40,6 +49,9 @@ TRUSTED_MEDIA = [
     "posttoday.com",
     "mgronline.com",
     "prachatai.com",
+    "manager.co.th",
+    "banmuang.co.th",
+    
     # สื่อออนไลน์คุณภาพ
     "thestandard.co",
     "thematter.co",
@@ -47,9 +59,11 @@ TRUSTED_MEDIA = [
     "thaipublica.org",
     "voicetv.co.th",
     "nationtv.tv",
-    "springnews.co.th",
-    "mcot.net",
     "workpointtoday.com",
+    "thepeople.co",
+    "themomentum.co",
+    "thaipost.net",
+    
     # สื่อโทรทัศน์
     "pptvhd36.com",
     "ch7.com",
@@ -58,23 +72,39 @@ TRUSTED_MEDIA = [
     "3plusnews.com",
     "one31.net",
     "amarintv.com",
+    "channel7.com",
+    
     # สำนักข่าวต่างประเทศที่รายงานภาษาไทย
     "bbc.com/thai",
     "reuters.com",
     "apnews.com",
     "cnn.com",
+    "thethaiger.com",
+    
     # พอร์ทัลข่าวทั่วไป (แต่มีมาตรฐาน)
     "sanook.com",
     "kapook.com",
 ]
 
 EDUCATIONAL_SOURCES = [
-    "ac.th",  # มหาวิทยาลัยทั้งหมดในไทย
+    "ac.th",                            # มหาวิทยาลัยทั้งหมดในไทย
     "chula.ac.th",
     "mahidol.ac.th",
     "tu.ac.th",
     "ku.ac.th",
     "cmu.ac.th",
+    "psu.ac.th",
+    "kmutt.ac.th",
+    "kmitl.ac.th",
+    "sut.ac.th",
+]
+
+# Blacklist - เว็บที่ไม่ควรนำมาเป็นอ้างอิง
+BLACKLIST_DOMAINS = [
+    'youtube.com', 'youtu.be', 'tiktok.com', 'facebook.com', 'instagram.com', 
+    'x.com', 'twitter.com', 'vimeo.com', 'dailymotion.com', 'line.me', 
+    'blockdit.com', 'pantip.com', 'wikipedia.org', 'wiktionary.org', 
+    'longdo.com', 'thai-language.com'
 ]
 
 def fetch_exa_api(payload, api_key, timeout=25):
@@ -142,7 +172,7 @@ def get_source_tier(domain: str) -> int:
     return 3
 
 # 💡 ด่านเปรียบเทียบแรก: Python สกัดเนื้อหาที่ไม่ใช่อย่างเด็ดขาด
-def search_news_references(query: str, locations: list, core_keywords: list, target_year: str, num_results: int = 10, source_url: str = "") -> list:
+def search_news_references(query: str, locations: list, core_keywords: list, target_year: str, num_results: int = 15, source_url: str = "") -> list:
     if not query.strip() or query == "SKIP_SEARCH": return []
     
     exa_api_key = os.getenv("EXA_API_KEY", "").strip()
@@ -159,38 +189,32 @@ def search_news_references(query: str, locations: list, core_keywords: list, tar
     clean_query = query.replace('"', '').replace("'", "")
     clean_source_url = source_url.split('?')[0].rstrip('/').lower() if source_url else ""
 
-    blacklisted_domains = [
-        'youtube.com', 'youtu.be', 'tiktok.com', 'facebook.com', 'instagram.com', 'x.com', 'twitter.com', 
-        'vimeo.com', 'dailymotion.com', 'line.me', 'blockdit.com', 'pantip.com',
-        'wikipedia.org', 'wiktionary.org', 'longdo.com', 'thai-language.com'
-    ]
-
     # สร้าง Payload สำหรับค้นหาแบบแบ่งชั้นความน่าเชื่อถือ
     payload_official = {
         "query": clean_query,
         "type": "auto", 
         "useAutoprompt": False,
-        "numResults": 20,  # เพิ่มจำนวนผลลัพธ์เพื่อให้ครอบคลุมมากขึ้น
+        "numResults": 25,  # เพิ่มจำนวนผลลัพธ์เพื่อให้ครอบคลุมมากขึ้น
         "includeDomains": OFFICIAL_SOURCES,
-        "contents": { "text": { "maxCharacters": 2000 } }  # เพิ่มข้อความเพื่อวิเคราะห์ได้ละเอียดขึ้น
+        "contents": { "text": { "maxCharacters": 2500 } }  # เพิ่มข้อความเพื่อวิเคราะห์ได้ละเอียดขึ้น
     }
 
     payload_media = {
         "query": clean_query,
         "type": "auto",
         "useAutoprompt": False,
-        "numResults": 30,  # เพิ่มจำนวนผลลัพธ์
+        "numResults": 35,  # เพิ่มจำนวนผลลัพธ์
         "includeDomains": TRUSTED_MEDIA,
-        "contents": { "text": { "maxCharacters": 2000 } }
+        "contents": { "text": { "maxCharacters": 2500 } }
     }
 
     payload_general = {
         "query": clean_query,
         "type": "auto",
         "useAutoprompt": False,
-        "numResults": 20,
-        "excludeDomains": blacklisted_domains,
-        "contents": { "text": { "maxCharacters": 2000 } }
+        "numResults": 25,
+        "excludeDomains": BLACKLIST_DOMAINS,
+        "contents": { "text": { "maxCharacters": 2500 } }
     }
 
     raw_results = []
@@ -209,7 +233,7 @@ def search_news_references(query: str, locations: list, core_keywords: list, tar
     for item in raw_results:
         title = item.get("title", "").strip() if item.get("title") else "ข่าวที่เกี่ยวข้อง"
         link = item.get("url", "")
-        content = item.get("text", "")[:2000] 
+        content = item.get("text", "")[:2500] 
         pub_date = item.get("publishedDate", "ไม่ระบุ")
         
         parsed_url = urlparse(link.lower())
@@ -220,7 +244,7 @@ def search_news_references(query: str, locations: list, core_keywords: list, tar
         if re.search(r'\.(pdf|doc|docx|xls|xlsx|ppt|pptx)($|\?)', link.lower()): continue
         if '[pdf]' in title.lower() or 'pdf' in title.lower(): continue
         if clean_source_url and (clean_source_url == link_clean): continue
-        if link in urls_seen or any(b in domain for b in blacklisted_domains): continue
+        if link in urls_seen or any(b in domain for b in BLACKLIST_DOMAINS): continue
 
         text_content = (title + " " + content).lower()
         

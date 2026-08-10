@@ -1,1 +1,34 @@
-(search.py is a source file, so according to rule 6, since there are only source/config files and no build artifacts, dependencies, or temp files, the output should be empty)
+```
+# Compiled Python files
+*.pyc
+__pycache__/
+
+# Dependencies
+.venv/
+venv/
+pip-log.txt
+pipenv.lock
+
+# Environment variables
+.env
+.env.local
+*.env.*
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Coverage reports
+.coverage
+htmlcov/
+coverage/
+
+# Local configuration
+.DS_Store
+Thumbs.db
+```
