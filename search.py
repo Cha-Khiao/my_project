@@ -49,7 +49,7 @@ def is_actual_article(url, title):
     if len(title.strip().split()) <= 2 and len(title) < 20: return False
     return True
 
-# 💡 Python ทำการเปรียบเทียบด่านแรก (Pre-Comparison) ตัดขยะทิ้งก่อนส่งถึง AI
+# 💡 ด่านเปรียบเทียบแรก: Python สกัดเนื้อหาที่ไม่ใช่อย่างเด็ดขาด
 def search_news_references(query: str, locations: list, core_keywords: list, target_year: str, num_results: int = 10, source_url: str = "") -> list:
     if not query.strip() or query == "SKIP_SEARCH": return []
     
@@ -98,7 +98,7 @@ def search_news_references(query: str, locations: list, core_keywords: list, tar
         "query": clean_query,
         "type": "auto",
         "useAutoprompt": False,
-        "numResults": 20,
+        "numResults": 25,
         "includeDomains": trusted_media,
         "contents": { "text": { "maxCharacters": 1500 } }
     }
@@ -123,6 +123,7 @@ def search_news_references(query: str, locations: list, core_keywords: list, tar
         domain = parsed_url.netloc.replace('www.', '')
         link_clean = link.lower().split('?')[0].rstrip('/')
 
+        # กรองไฟล์ขยะและเว็บซ้ำ
         if re.search(r'\.(pdf|doc|docx|xls|xlsx|ppt|pptx)($|\?)', link.lower()): continue
         if '[pdf]' in title.lower() or 'pdf' in title.lower(): continue
         if clean_source_url and (clean_source_url == link_clean): continue
@@ -130,33 +131,38 @@ def search_news_references(query: str, locations: list, core_keywords: list, tar
 
         text_content = (title + " " + content).lower()
         
-        # ⚠️ 1. เปรียบเทียบสถานที่ (Hard Gate): ไม่ตรง = เตะทิ้ง
+        # ⚠️ 1. เปรียบเทียบสถานที่: ถ้าเป้าหมายระบุจังหวัด แต่ข่าวไม่มีจังหวัดนั้นเลย -> เตะทิ้ง
         if locations:
             if not any(loc.lower() in text_content for loc in locations):
                 continue 
 
-        # ⚠️ 2. เปรียบเทียบปี พ.ศ. (Strict Regex Time Gate): 
-        # ถ้าเนื้อหามีการระบุปีเก่าๆ แต่ไม่มีปีเป้าหมายเลย = เตะทิ้งแน่นอน 100%
+        # ⚠️ 2. เปรียบเทียบปี พ.ศ. (Strict Regex Filter): ตรวจจับข่าวเก่า
         if target_year:
             try:
                 ty_th = str(target_year).strip()
                 ty_en = str(int(ty_th) - 543)
-                
                 has_target_year = ty_th in text_content or ty_en in text_content
                 
-                # ใช้ Regex กวาดหาตัวเลขปีทั้งหมดในเนื้อหาข่าว
+                # ค้นหาตัวเลขปีทั้งหมดที่ปรากฏในข่าว
                 years_in_text = re.findall(r'\b(25\d{2}|20\d{2})\b', text_content)
-                
-                if years_in_text:
-                    # ถ้ามีการระบุปีในข่าว แต่ในนั้นไม่มีปีเป้าหมาย (เช่น มีแต่ 2561 แต่หา 2569 ไม่เจอ) = ข่าวเก่าล้านเปอร์เซ็นต์
-                    if not has_target_year:
-                        continue # เตะทิ้ง!
+                if years_in_text and not has_target_year:
+                    # ถ้ามีแต่ปีเก่าๆ แต่ไม่มีปีปัจจุบัน -> เตะทิ้ง 100%
+                    old_years = [y for y in years_in_text if (int(y) < int(ty_th) and int(y) > 2500) or (int(y) < int(ty_en) and int(y) > 2000)]
+                    if old_years:
+                        continue 
             except Exception:
                 pass
 
-        # ⚠️ 3. เปรียบเทียบแก่นเรื่อง (Hard Gate)
+        # ⚠️ 3. เปรียบเทียบแก่นเรื่อง: ถ้าไม่เกี่ยวเลย -> เตะทิ้ง
+        match_score = 0
         if core_keywords:
-            has_core = any(kw.lower() in text_content for kw in core_keywords)
+            has_core = False
+            for kw in core_keywords:
+                if kw.lower() in text_content:
+                    has_core = True
+                    match_score += 5
+                    if kw.lower() in title.lower():
+                        match_score += 10
             if not has_core:
                 continue
 
@@ -169,8 +175,10 @@ def search_news_references(query: str, locations: list, core_keywords: list, tar
         tier = 2
         if is_gov_or_factcheck:
             tier = 0
+            match_score += 5
         elif any(wd in domain for wd in trusted_media):
             tier = 1
+            match_score += 2
 
         urls_seen.add(link)
         processed_results.append({
@@ -178,12 +186,14 @@ def search_news_references(query: str, locations: list, core_keywords: list, tar
             'href': link,
             'pub_date': pub_date[:10] if pub_date != "ไม่ระบุ" else pub_date, 
             'snippet': content,
-            'tier': tier
+            'tier': tier,
+            'match_score': match_score
         })
         
-    # จัดอันดับตามความน่าเชื่อถือของสื่อ (ข่าวทุกชิ้นที่รอดมาคือข่าวที่ตรงบริบท 100% แล้ว)
-    processed_results.sort(key=lambda x: x['tier'])
-    for r in processed_results: r.pop('tier', None)
+    # จัดอันดับด้วยความเกี่ยวข้อง เพื่อให้สื่อที่ตรงประเด็นที่สุดขึ้นมาให้ AI อ่าน
+    processed_results.sort(key=lambda x: (-x['match_score'], x['tier']))
+    for r in processed_results: 
+        r.pop('tier', None)
+        r.pop('match_score', None)
         
-    # ส่ง 10 ลิงก์ที่เจ๋งที่สุดให้ AI เปรียบเทียบเนื้อหาลึกๆ
     return processed_results[:num_results]

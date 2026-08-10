@@ -55,8 +55,8 @@ with st.sidebar:
     
     st.markdown("### 🏛️ สถาปัตยกรรมระบบ")
     st.info("""
-    **🚀 Fair Comparative Analysis**
-    ระบบใช้การคัดกรองที่แม่นยำ (Location & Temporal Regex Filter) เพื่อสกัดข่าวที่ไม่เกี่ยวข้องออกทั้งหมด จากนั้นใช้ AI เปรียบเทียบเนื้อหาอย่างยุติธรรม โดยไม่หักคะแนนหากข้อความต้นฉบับไม่ได้ระบุรายละเอียดเชิงลึก
+    **🚀 Deep Comparative Pipeline**
+    ระบบดำเนินการเปรียบเทียบในทุกขั้นตอน Python คัดกรองข่าวผิดปีและสถานที่ออกอย่างเด็ดขาด จากนั้น LLM จะเปรียบเทียบเนื้อหาเชิงลึกเฉพาะแหล่งอ้างอิงที่เกี่ยวข้องกับเหตุการณ์จริงๆ เพื่อให้ได้บทวิเคราะห์ที่แม่นยำที่สุด
     """)
     
     with st.expander("ℹ️ มาตรฐานการประเมิน (IFCN)"):
@@ -65,8 +65,8 @@ with st.sidebar:
         *   **95%:** สอดคล้องกับสื่อหลักชัดเจน
         *   **75%:** สอดคล้องส่วนใหญ่ (มีคลาดเคลื่อนเล็กน้อย)
         *   **50%:** ข้อมูลก้ำกึ่ง ไม่ชัดเจน
-        *   **25%:** มีเค้าโครง แต่บิดเบือนไปจากสื่อหลัก
-        *   **10%:** ขัดแย้ง 100% หรือไร้แหล่งอ้างอิงสนับสนุน
+        *   **25%:** ข้อมูลบิดเบือนไปจากสื่อหลัก
+        *   **10%:** ข่าวปลอม / ไร้แหล่งอ้างอิงสนับสนุน
         """)
         
     st.divider()
@@ -205,7 +205,7 @@ if news_content:
             result_dict.update({"verdict_summary": "ไม่มีเนื้อหา"})
             
         else:
-            smooth_progress(progress_bar, 5, 25, "🧠 AI กำลังสกัดคำสำคัญและวางแผนค้นหา (25%)")
+            smooth_progress(progress_bar, 5, 25, "🧠 AI กำลังสกัดคำสำคัญเพื่อวางแผนการเปรียบเทียบ (25%)")
             text_for_keyword = news_content.split("]:\n")[-1] if "[เนื้อหาข่าวจริง" in news_content else news_content
             
             action, search_query, topic_summary, locations, core_keywords, target_year = cached_plan_search(text_for_keyword)
@@ -219,14 +219,14 @@ if news_content:
             else:
                 st.markdown(f"📌 **ประเด็นที่เปรียบเทียบ:** {topic_summary}")
                 
-                smooth_progress(progress_bar, 25, 55, "🌐 ระบบกำลังสืบค้นและสกัดกั้นข่าวที่ไม่เกี่ยวข้องทิ้งอย่างเด็ดขาด (55%)")
+                smooth_progress(progress_bar, 25, 55, "🌐 ระบบกำลังสืบค้นและคัดกรองข้อมูลขยะทิ้ง (55%)")
                 
                 references = []
                 if search_query:
                     references = cached_search(search_query, locations, core_keywords, target_year, original_url)
                 
-                st.markdown(f"🔎 **ดึงแหล่งข้อมูลที่ตรงเป้าหมายมาได้ {len(references)} แหล่ง เพื่อส่งเข้ากระบวนการเปรียบเทียบ**")
-                smooth_progress(progress_bar, 55, 85, "⚖️ AI กำลังวิเคราะห์และเปรียบเทียบเนื้อหาอย่างยุติธรรม (85%)")
+                st.markdown(f"🔎 **ดึงแหล่งข้อมูลมาได้ {len(references)} แหล่ง เพื่อเข้าสู่กระบวนการเปรียบเทียบ**")
+                smooth_progress(progress_bar, 55, 85, "⚖️ AI กำลังวิเคราะห์และเปรียบเทียบเนื้อหา (85%)")
                 st.markdown("⚖️ **กำลังประเมินความสอดคล้องของข้อมูล...**")
                 
                 ai_dict = cached_analyze(news_content, references, current_date_str, original_url)
@@ -279,10 +279,11 @@ if news_content:
             st.markdown("### 📊 บทวิเคราะห์การเปรียบเทียบเชิงลึกจาก AI")
             st.markdown(result_dict.get('comparative_analysis', 'ไม่มีบทวิเคราะห์เพิ่มเติม'))
 
+        # 💡 โชว์เฉพาะรหัสอ้างอิงที่ AI ยืนยันว่าเกี่ยวข้องกันจริงๆ เท่านั้น ไม่มีการบังคับโชว์
         rel_ids = result_dict.get("relevant_ref_ids", [])
         
         with st.container(border=True):
-            st.subheader("📚 แหล่งข้อมูลที่ใช้ในการเปรียบเทียบ")
+            st.subheader("📚 แหล่งข้อมูลที่ใช้ในการเปรียบเทียบเนื้อหา")
             
             verified_refs = []
             if references:
@@ -294,7 +295,7 @@ if news_content:
                 for idx, ref in enumerate(verified_refs):
                     st.markdown(f"{idx+1}. [{ref.get('title', 'ลิงก์อ้างอิง')}]({ref.get('href', '#')})")
             else:
-                st.info("ไม่พบข่าวสารจากสื่อหลัก หรือประกาศจากหน่วยงานรัฐที่มีเนื้อหาสอดคล้องเพียงพอต่อการนำมาเปรียบเทียบ (ระบบได้คัดกรองข่าวคนละสถานที่ และข่าวเก่าทิ้งไปอย่างเด็ดขาดแล้ว) จึงประเมินว่าข้อความนี้ขาดหลักฐานสนับสนุน")
+                st.info("ไม่พบข่าวสารจากสื่อหลักและภาครัฐในสารบบที่มีเนื้อหาเหตุการณ์ตรงกับข้อความต้นฉบับเพียงพอต่อการนำมาเปรียบเทียบ (ระบบได้คัดกรองข่าวคนละสถานที่ และข่าวเก่าทิ้งไปอย่างเด็ดขาดแล้ว) จึงประเมินว่าข้อความนี้ขาดหลักฐานสนับสนุน")
 
     try:
         log_input_data = original_url if original_url else news_content
