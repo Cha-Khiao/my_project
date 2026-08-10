@@ -47,17 +47,17 @@ def parse_json_safely(text: str) -> dict:
 
 def validate_ai_response(parsed_dict: dict, raw_output: str = "") -> dict:
     template = {
-        "verdict_summary": "ไม่สามารถสรุปคำตัดสินได้",
-        "facts": ["ไม่พบข้อมูลส่วนที่เป็นความจริง"],
-        "distortions": ["ไม่พบข้อมูลส่วนที่บิดเบือน หรือข้อมูลไม่เพียงพอ"],
-        "ai_insights": "ระบบไม่สามารถวิเคราะห์เชิงลึกได้อย่างสมบูรณ์",
+        "verdict_summary": "ไม่สามารถเปรียบเทียบข้อมูลได้",
+        "supported_points": ["ไม่พบข้อมูลที่สอดคล้องกับแหล่งอ้างอิง"],
+        "conflicting_points": ["ไม่พบข้อมูลที่ขัดแย้ง หรือแหล่งอ้างอิงไม่เพียงพอต่อการเปรียบเทียบ"],
+        "comparative_analysis": "ระบบไม่สามารถวิเคราะห์เปรียบเทียบเชิงลึกได้อย่างสมบูรณ์",
         "score": 3,
         "relevant_ref_ids": []
     }
     
     if not isinstance(parsed_dict, dict) or not parsed_dict:
         if raw_output:
-            template["ai_insights"] = f"❌ โครงสร้างข้อมูลผิดพลาด\n\n[Raw Data]:\n{raw_output[:500]}"
+            template["comparative_analysis"] = f"❌ โครงสร้างข้อมูลผิดพลาด\n\n[Raw Data]:\n{raw_output[:500]}"
         return template
         
     for key in template.keys():
@@ -93,7 +93,7 @@ def call_openrouter(prompt: str, system_msg: str) -> dict:
         return {}
 
 # =========================================================
-# ⚡ STEP 1: Search Planner (ระบบค้นหาแบบ Advanced Google Operators)
+# ⚡ STEP 1: Search Planner
 # =========================================================
 def analyze_intent_and_plan_search(news_text: str) -> tuple:
     text_for_analysis = news_text
@@ -101,79 +101,88 @@ def analyze_intent_and_plan_search(news_text: str) -> tuple:
         text_for_analysis = news_text.split("]:\n")[-1] 
         
     text_chunk = sanitize_for_api(text_for_analysis[:1500])
-    current_time_context = get_current_thai_time()
+    tz = pytz.timezone('Asia/Bangkok')
+    current_year_th = datetime.now(tz).year + 543
     
-    prompt = f"""ข้อความที่ดึงมาจากเว็บไซต์: 
+    prompt = f"""ข้อความที่ต้องการตรวจสอบ: 
 "{text_chunk}"
 
-หน้าที่: สกัด "คำค้นหาขั้นสูง (Advanced Google Query)" เพื่อบังคับให้ Google หาเฉพาะข่าวที่เกี่ยวข้องกันเป๊ะๆ
-กฎเหล็กขั้นเด็ดขาด:
-1. `search_query`: ⚠️ บังคับให้ใช้เครื่องหมายฟันหนู (Double Quotes) `""` คร่อมคำนาม/สถานที่/เหตุการณ์ที่สำคัญ เพื่อสั่งให้ Google ทำการ Exact Match (เช่น `"พลพีร์" "สายไฟลงดิน" "สุรินทร์"` หรือ `"มท.2" "จัดระเบียบสายไฟ" "สุรินทร์"`) ห้ามแต่งเป็นประโยคยาวๆ ที่ไม่มีฟันหนูเด็ดขาด!
-2. `must_have_keywords`: สกัดชื่อสถานที่หรือบุคคล 1-2 คำ (เช่น ["สุรินทร์", "สายไฟ"]) เพื่อใช้เป็นตาข่ายชั้นที่ 2
-3. หากข้อความเป็นเรื่องทักทาย ให้ action = "DROP"
+หน้าที่: สกัด "ข้อมูลเพื่อนำไปคัดกรองข่าว" (Filter Parameters)
+กฎ:
+1. `search_query`: ประโยคค้นหาข่าว (ห้ามใส่เลขปีลงในประโยคนี้)
+2. `locations`: สกัด "สถานที่/จังหวัด"
+3. `core_keywords`: สกัดแก่นของเรื่อง 2-3 คำ
+4. `target_year`: สกัด "ปี พ.ศ." (ตัวเลข 4 หลัก) ถ้าไม่มีให้ใช้ '{current_year_th}'
+5. หากข้อความไม่มีเนื้อหาสาระ ให้ action = "DROP"
 
 ตอบกลับเป็น JSON รูปแบบนี้เท่านั้น:
 {{
     "action": "SEARCH หรือ DROP",
-    "search_query": "คีย์เวิร์ดที่ถูกคร่อมด้วยฟันหนู (Advanced Search)",
-    "must_have_keywords": ["คำบังคับที่1", "คำบังคับที่2"],
+    "search_query": "ประโยคค้นหา",
+    "locations": ["จังหวัด"],
+    "core_keywords": ["คำแก่นเรื่อง1", "คำพ้อง2"],
+    "target_year": "2569",
     "topic_summary": "สรุปประเด็นหลัก 1 ประโยค"
 }}"""
-    res_data = call_openrouter(prompt, "You MUST use Double Quotes (\"\") around core entities to force Exact Match on Google. Output strictly in JSON format in THAI.")
+    res_data = call_openrouter(prompt, "Extract strict filter parameters. Output strictly in JSON format in THAI.")
     
     action = res_data.get("action", "SEARCH").upper()
-    
     raw_query = res_data.get("search_query", text_chunk[:80])
-    # คลีนคำขยะแต่รักษาฟันหนูไว้
-    clean_query = re.sub(r'(ข่าว|ล่าสุด|รัฐบาลไทย|\||\.\.\.)', '', raw_query).strip()
-    must_have_keywords = res_data.get("must_have_keywords", [])
-    topic_summary = res_data.get("topic_summary", "ตรวจสอบข้อเท็จจริง")
+    clean_query = re.sub(r'(?i)(facebook|fb|twitter|x|tiktok|youtube|ข่าวล่าสุด|รัฐบาลไทย|\||\.\.\.)', '', raw_query).strip()
     
-    if action == "DROP": return "DROP", "", res_data.get("reason", "ไม่ใช่ข่าวสาร"), []
-    return "SEARCH", clean_query, topic_summary, must_have_keywords
+    locations = res_data.get("locations", [])
+    core_keywords = res_data.get("core_keywords", [])
+    target_year = str(res_data.get("target_year", current_year_th)).strip()
+    topic_summary = res_data.get("topic_summary", "ประเมินและเปรียบเทียบข้อเท็จจริง")
+    
+    if action == "DROP": return "DROP", "", res_data.get("reason", "ไม่ใช่เนื้อหาที่สามารถเปรียบเทียบได้"), [], [], ""
+    return "SEARCH", clean_query, topic_summary, locations, core_keywords, target_year
 
 # =========================================================
-# ⚖️ STEP 2: The Analyzer
+# ⚖️ STEP 2: The Analyzer (ระบบเปรียบเทียบเนื้อหาที่ยุติธรรมที่สุด)
 # =========================================================
 def analyze_news_with_qwen(news_text: str, references: list, current_date: str, source_url: str = "") -> dict:
     clean_claim = sanitize_for_api(news_text[:2000])
-    ref_text = "\n\n".join([f"[อ้างอิง {i+1}]: {r['title']}\nเนื้อหา: {r.get('snippet', '')}" for i, r in enumerate(references)]) if references else "ไม่มีอ้างอิง"
+    ref_text = "\n\n".join([f"[อ้างอิง {i+1}]: {r['title']} | วันที่: {r.get('pub_date', 'ไม่ระบุ')}\nเนื้อหา: {r.get('snippet', '')}" for i, r in enumerate(references)]) if references else "ไม่มีอ้างอิง"
     
-    is_official_source = bool(source_url and (".go.th" in source_url.lower() or ".gov" in source_url.lower()))
+    is_official_source = bool(source_url and (".go.th" in source_url.lower() or ".gov" in source_url.lower() or 'antifakenewscenter.com' in source_url.lower()))
     origin_info = f"ดึงมาจากเว็บไซต์ทางการ (Official Source): {source_url}" if is_official_source else "ข้อความทั่วไป / โซเชียลมีเดีย"
     current_time_context = get_current_thai_time()
 
-    if not references and not is_official_source:
-        return validate_ai_response({"verdict_summary": "ไม่มีแหล่งข่าวใดนำเสนอเรื่องนี้", "score": 1, "ai_insights": "ระบบไม่พบข้อมูลในสารบบสื่อหลัก คาดว่าเป็นข่าวลือที่แต่งขึ้นมาเอง"})
+    # 💡 สอน AI ห้ามหักคะแนนถ้าผู้ใช้พูดกว้างๆ และต้องประเมินอย่างเป็นธรรม
+    prompt = f"""คุณคือ AI ผู้เชี่ยวชาญด้านการวิเคราะห์และเปรียบเทียบเนื้อหาข่าว (Comparative Analyst)
 
-    prompt = f"""คุณคือนักตรวจสอบข้อเท็จจริง (Fact-Checker)
 เวลาปัจจุบัน: {current_time_context}
-ข้อความที่ต้องการตรวจสอบ: "{clean_claim}"
-แหล่งที่มาของข้อความนี้: {origin_info}
+[ข้อความต้นฉบับ]: "{clean_claim}"
+[แหล่งที่มา]: {origin_info}
 
-หลักฐานที่ค้นพบจาก Search Engine:
+[แหล่งข้อมูลอ้างอิงที่ระบบคัดกรองมาอย่างเข้มงวดแล้ว]:
 {ref_text}
 
-ขั้นตอนการวิเคราะห์:
-1. หากลิงก์ต้นทางเป็นเว็บไซต์รัฐบาล (.go.th) ให้ยึดเจตนาการประกาศของเว็บนั้นเป็นความจริงสูงสุด
-2. พิจารณาที่ "แก่นเหตุการณ์ (Core Event)" หากแหล่งข่าวเจาะจงรายงานเหตุการณ์ตรงกัน ให้ถือเป็นความจริง 
+กระบวนการเปรียบเทียบเนื้อหา (Fair Content Comparison):
+1. ⚖️ เปรียบเทียบความสอดคล้อง: ข้อความต้นฉบับสอดคล้องกับข่าวที่ระบบหามาได้หรือไม่?
+   - ⚠️ กฎความยุติธรรม: หากข้อความต้นฉบับอธิบายเรื่องแบบกว้างๆ (เช่น ระบุแค่จังหวัด) แต่แหล่งอ้างอิงระบุลึกถึงระดับหมู่บ้าน/ตำบล ให้ถือว่า "สอดคล้องกัน (Supported)" ห้ามมองว่าเป็นความขัดแย้ง และห้ามนำมาลดคะแนนเด็ดขาด!
+   - ❌ ความขัดแย้ง (Conflicting): คือข้อมูลที่สวนทางกันจริงๆ (เช่น ระบุปีผิด, หรือบอกว่างบ 10 ล้าน แต่ความจริง 100 ล้าน)
+2. 📌 relevant_ref_ids: ให้ดึงรหัสของแหล่งอ้างอิงที่รายงานเรื่องเดียวกันกับข้อความต้นฉบับ มาแสดงให้ผู้ใช้เห็นว่าเราเทียบกับอะไร
+3. 🏛️ น้ำหนักข้อมูล: หากแหล่งที่มาของข้อความคือ เว็บรัฐบาล (Official Source) ให้ประเมินว่ามีความน่าเชื่อถือสูงสุด (Score=5) เสมอ
 
-เกณฑ์คะแนน: 5=จริง 100%, 4=จริงส่วนใหญ่, 3=ก้ำกึ่ง, 2=บิดเบือน, 1=ปลอม/ไร้หลักฐาน
+เกณฑ์คะแนน (ความสอดคล้อง): 
+5=เนื้อหาสอดคล้องกับสื่อหลักอย่างสมบูรณ์, 4=สอดคล้องส่วนใหญ่, 3=ก้ำกึ่ง/ไม่ชัดเจน, 2=พบการบิดเบือนข้อมูลจากสื่อหลัก, 1=ขัดแย้งอย่างสิ้นเชิง หรือไม่มีแหล่งอ้างอิงสอดคล้องเลย
 
 ตอบกลับเป็น JSON รูปแบบนี้เท่านั้น:
 {{
-    "thought": "ตรวจสอบแหล่งข่าวว่ารายงานเหตุการณ์ตรงกับข้อความหรือไม่",
-    "verdict_summary": "ฟันธงสั้นๆ 1 ประโยค",
-    "facts": ["แก่นความจริงที่พบ"],
-    "distortions": ["ข้อบิดเบือน (ถ้ามี)"],
-    "ai_insights": "สรุปเหตุผลที่ให้คะแนน",
-    "relevant_ref_ids": [เฉพาะรหัสอ้างอิงที่เป็น 'ข่าวเจาะจง' และเหตุการณ์ตรงกันเท่านั้น],
+    "thought": "เปรียบเทียบเนื้อหา หากต้นฉบับกว้างกว่าแหล่งอ้างอิงให้ถือว่าสอดคล้องกัน ห้ามหักคะแนน",
+    "verdict_summary": "สรุปผลการเปรียบเทียบ 1 ประโยค",
+    "supported_points": ["ประเด็นที่สอดคล้องกับแหล่งอ้างอิง"],
+    "conflicting_points": ["ประเด็นที่ขัดแย้งอย่างชัดเจน (หากไม่มี ให้เว้นว่าง)"],
+    "comparative_analysis": "อธิบายผลการเปรียบเทียบอย่างเป็นเหตุเป็นผล",
+    "relevant_ref_ids": [ระบุรหัสอ้างอิงของข่าวที่นำมาเปรียบเทียบและสอดคล้องกับเหตุการณ์],
     "score": ตัวเลข 1-5
 }}"""
     
-    final_result = call_openrouter(prompt, "You are a logical Fact-Checker. Match CORE EVENTS and reject homepage/general links. Output strictly in JSON format in THAI.")
+    final_result = call_openrouter(prompt, "You are a Comparative Analyst. Perform a FAIR comparison: DO NOT penalize the text if it lacks micro-details present in the references. Output strictly in JSON format in THAI.")
     if not final_result:
-        return validate_ai_response({"ai_insights": "❌ ข้อผิดพลาด: AI ไม่สามารถประมวลผลได้"})
+        return validate_ai_response({"comparative_analysis": "❌ ข้อผิดพลาด: AI ไม่สามารถประมวลผลการเปรียบเทียบได้"})
         
     return validate_ai_response(final_result)
 
