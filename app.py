@@ -55,8 +55,8 @@ with st.sidebar:
     
     st.markdown("### 🏛️ สถาปัตยกรรมระบบ")
     st.info("""
-    **🚀 Fair Comparative Analysis**
-    ระบบใช้การคัดกรองที่แม่นยำ (Location & Temporal Regex Filter) เพื่อสกัดข่าวที่ไม่เกี่ยวข้องออกทั้งหมด จากนั้นใช้ AI เปรียบเทียบเนื้อหาอย่างยุติธรรม โดยไม่หักคะแนนหากข้อความต้นฉบับไม่ได้ระบุรายละเอียดเชิงลึก
+    **🚀 Semantic Synonyms RAG**
+    ระบบจะทำการสกัดคำสำคัญและแปลงเป็น 'ภาษาราชการ' โดยอัตโนมัติ เพื่อให้สามารถสืบค้นประกาศจากเว็บไซต์ของรัฐ (go.th) และสื่อหลักได้อย่างแม่นยำ
     """)
     
     with st.expander("ℹ️ มาตรฐานการประเมิน (IFCN)"):
@@ -65,8 +65,8 @@ with st.sidebar:
         *   **95%:** สอดคล้องกับสื่อหลักชัดเจน
         *   **75%:** สอดคล้องส่วนใหญ่ (มีคลาดเคลื่อนเล็กน้อย)
         *   **50%:** ข้อมูลก้ำกึ่ง ไม่ชัดเจน
-        *   **25%:** มีเค้าโครง แต่บิดเบือนไปจากสื่อหลัก
-        *   **10%:** ขัดแย้ง 100% หรือไร้แหล่งอ้างอิงสนับสนุน
+        *   **25%:** ข้อมูลบิดเบือนไปจากสื่อหลัก
+        *   **10%:** ข่าวปลอม / ไร้แหล่งอ้างอิงสนับสนุน
         """)
         
     st.divider()
@@ -205,7 +205,7 @@ if news_content:
             result_dict.update({"verdict_summary": "ไม่มีเนื้อหา"})
             
         else:
-            smooth_progress(progress_bar, 5, 25, "🧠 AI กำลังสกัดคำสำคัญและวางแผนค้นหา (25%)")
+            smooth_progress(progress_bar, 5, 25, "🧠 AI กำลังสกัดคีย์เวิร์ดและแปลงเป็นภาษาราชการ (25%)")
             text_for_keyword = news_content.split("]:\n")[-1] if "[เนื้อหาข่าวจริง" in news_content else news_content
             
             action, search_query, topic_summary, locations, core_keywords, target_year = cached_plan_search(text_for_keyword)
@@ -217,17 +217,21 @@ if news_content:
                 search_query = "SKIP_SEARCH"
                 result_dict.update({"verdict_summary": "เนื้อหาทั่วไป/เรื่องส่วนตัว"})
             else:
-                st.markdown(f"📌 **ประเด็นที่เปรียบเทียบ:** {topic_summary}")
+                st.markdown(f"📌 **ประเด็นที่วิเคราะห์:** {topic_summary}")
                 
-                smooth_progress(progress_bar, 25, 55, "🌐 ระบบกำลังสืบค้นและสกัดกั้นข่าวที่ไม่เกี่ยวข้องทิ้งอย่างเด็ดขาด (55%)")
+                loc_str = ", ".join(locations) if locations else "ไม่ระบุ"
+                kw_str = ", ".join(core_keywords) if core_keywords else "ไม่ระบุ"
+                st.info(f"🔑 **คีย์เวิร์ดที่ใช้ค้นหา (รวมคำพ้อง):** `{kw_str}`\n📍 **พื้นที่:** `{loc_str}` | 📅 **ปีเป้าหมาย:** `{target_year}`")
+                
+                smooth_progress(progress_bar, 25, 55, "🌐 ระบบกำลังสืบค้นเว็บรัฐบาลและสื่อหลัก (55%)")
                 
                 references = []
                 if search_query:
                     references = cached_search(search_query, locations, core_keywords, target_year, original_url)
                 
-                st.markdown(f"🔎 **ดึงแหล่งข้อมูลที่ตรงเป้าหมายมาได้ {len(references)} แหล่ง เพื่อส่งเข้ากระบวนการเปรียบเทียบ**")
-                smooth_progress(progress_bar, 55, 85, "⚖️ AI กำลังวิเคราะห์และเปรียบเทียบเนื้อหาอย่างยุติธรรม (85%)")
-                st.markdown("⚖️ **กำลังประเมินความสอดคล้องของข้อมูล...**")
+                st.markdown(f"🔎 **ดึงแหล่งข้อมูลมาได้ {len(references)} แหล่ง เพื่อทำการเปรียบเทียบ**")
+                smooth_progress(progress_bar, 55, 85, "⚖️ AI กำลังวิเคราะห์และคัดกรองเนื้อหา (85%)")
+                st.markdown("⚖️ **กำลังประเมินความสอดคล้อง/ความขัดแย้งของข้อมูล...**")
                 
                 ai_dict = cached_analyze(news_content, references, current_date_str, original_url)
                 if ai_dict:
@@ -282,19 +286,19 @@ if news_content:
         rel_ids = result_dict.get("relevant_ref_ids", [])
         
         with st.container(border=True):
-            st.subheader("📚 แหล่งข้อมูลที่ใช้ในการเปรียบเทียบ")
+            st.subheader("📚 แหล่งข้อมูลที่เกี่ยวข้องจริงๆ ที่นำมาใช้เปรียบเทียบ")
             
             verified_refs = []
             if references:
                 for idx, ref in enumerate(references):
                     if any(str(idx + 1) == str(rel_id) for rel_id in rel_ids):
                         verified_refs.append(ref)
-                    
+                        
             if verified_refs:
                 for idx, ref in enumerate(verified_refs):
                     st.markdown(f"{idx+1}. [{ref.get('title', 'ลิงก์อ้างอิง')}]({ref.get('href', '#')})")
             else:
-                st.info("ไม่พบข่าวสารจากสื่อหลัก หรือประกาศจากหน่วยงานรัฐที่มีเนื้อหาสอดคล้องเพียงพอต่อการนำมาเปรียบเทียบ (ระบบได้คัดกรองข่าวคนละสถานที่ และข่าวเก่าทิ้งไปอย่างเด็ดขาดแล้ว) จึงประเมินว่าข้อความนี้ขาดหลักฐานสนับสนุน")
+                st.info("ไม่พบข่าวสารจากสื่อหลักและภาครัฐในสารบบที่มีเนื้อหาเหตุการณ์ตรงกับข้อความต้นฉบับเพียงพอต่อการนำมาเปรียบเทียบ (ระบบได้คัดกรองข่าวคนละสถานที่ และข่าวเก่าทิ้งไปอย่างเด็ดขาดแล้ว) จึงประเมินว่าข้อความนี้ขาดหลักฐานสนับสนุน")
 
     try:
         log_input_data = original_url if original_url else news_content

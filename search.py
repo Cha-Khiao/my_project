@@ -49,7 +49,6 @@ def is_actual_article(url, title):
     if len(title.strip().split()) <= 2 and len(title) < 20: return False
     return True
 
-# 💡 Python ทำการเปรียบเทียบด่านแรก (Pre-Comparison) ตัดขยะทิ้งก่อนส่งถึง AI
 def search_news_references(query: str, locations: list, core_keywords: list, target_year: str, num_results: int = 10, source_url: str = "") -> list:
     if not query.strip() or query == "SKIP_SEARCH": return []
     
@@ -85,12 +84,15 @@ def search_news_references(query: str, locations: list, core_keywords: list, tar
         'bbc.com', 'reuters.com', 'apnews.com', 'sanook.com', 'kapook.com', 'today.line.me'
     ]
 
+    # เพิ่มการผสมคำทางการเข้าไปใน Payload เพื่อให้ Exa หาง่ายขึ้น
+    gov_enhanced_query = f"{clean_query} {' '.join(core_keywords)}"
+    
     payload_gov = {
-        "query": clean_query,
+        "query": gov_enhanced_query,
         "type": "auto", 
-        "useAutoprompt": False,
-        "numResults": 15,
-        "includeDomains": ["go.th", "antifakenewscenter.com", "sure.factcheckthailand.org", "cofact.org"],
+        "useAutoprompt": True,
+        "numResults": 20,
+        "includeDomains": ["go.th", "prd.go.th", "antifakenewscenter.com", "sure.factcheckthailand.org", "cofact.org"],
         "contents": { "text": { "maxCharacters": 1500 } }
     }
 
@@ -98,7 +100,7 @@ def search_news_references(query: str, locations: list, core_keywords: list, tar
         "query": clean_query,
         "type": "auto",
         "useAutoprompt": False,
-        "numResults": 20,
+        "numResults": 30,
         "includeDomains": trusted_media,
         "contents": { "text": { "maxCharacters": 1500 } }
     }
@@ -129,36 +131,42 @@ def search_news_references(query: str, locations: list, core_keywords: list, tar
         if link in urls_seen or any(b in domain for b in blacklisted_domains): continue
 
         text_content = (title + " " + content).lower()
+        match_score = 0
         
-        # ⚠️ 1. เปรียบเทียบสถานที่ (Hard Gate): ไม่ตรง = เตะทิ้ง
-        if locations:
-            if not any(loc.lower() in text_content for loc in locations):
+        # ⚠️ 1. ด่านแก่นเรื่อง: ต้องเจอคีย์เวิร์ดอย่างน้อย 1 คำ (ครอบคลุมทั้งคำพูดและคำทางการ)
+        if core_keywords:
+            has_core = False
+            for kw in core_keywords:
+                if kw.lower() in text_content:
+                    has_core = True
+                    match_score += 15
+                    if kw.lower() in title.lower(): match_score += 20
+            
+            # ถ้าไม่เจอคำไหนเลยในเซ็ตคีย์เวิร์ด (คำพูดหรือทางการก็ไม่มี) เตะทิ้งทันที ป้องกันขยะ
+            if not has_core:
                 continue 
 
-        # ⚠️ 2. เปรียบเทียบปี พ.ศ. (Strict Regex Time Gate): 
-        # ถ้าเนื้อหามีการระบุปีเก่าๆ แต่ไม่มีปีเป้าหมายเลย = เตะทิ้งแน่นอน 100%
+        # 2. ให้คะแนนสถานที่
+        if locations:
+            if any(loc.lower() in text_content for loc in locations):
+                match_score += 20
+
+        # 3. ให้คะแนนเวลา (เตะข่าวเก่าทิ้ง)
         if target_year:
             try:
                 ty_th = str(target_year).strip()
                 ty_en = str(int(ty_th) - 543)
-                
                 has_target_year = ty_th in text_content or ty_en in text_content
                 
-                # ใช้ Regex กวาดหาตัวเลขปีทั้งหมดในเนื้อหาข่าว
                 years_in_text = re.findall(r'\b(25\d{2}|20\d{2})\b', text_content)
-                
-                if years_in_text:
-                    # ถ้ามีการระบุปีในข่าว แต่ในนั้นไม่มีปีเป้าหมาย (เช่น มีแต่ 2561 แต่หา 2569 ไม่เจอ) = ข่าวเก่าล้านเปอร์เซ็นต์
-                    if not has_target_year:
-                        continue # เตะทิ้ง!
+                if years_in_text and not has_target_year:
+                    old_years = [y for y in years_in_text if (int(y) < int(ty_th) and int(y) > 2500) or (int(y) < int(ty_en) and int(y) > 2000)]
+                    if old_years:
+                        continue # เตะทิ้ง
+                if has_target_year:
+                    match_score += 20
             except Exception:
                 pass
-
-        # ⚠️ 3. เปรียบเทียบแก่นเรื่อง (Hard Gate)
-        if core_keywords:
-            has_core = any(kw.lower() in text_content for kw in core_keywords)
-            if not has_core:
-                continue
 
         is_gov_or_factcheck = domain.endswith('.go.th') or domain.endswith('.gov') or domain.endswith('.ac.th') or domain.endswith('.or.th') or 'antifakenewscenter.com' in domain or 'sure.factcheckthailand.org' in domain or 'cofact.org' in domain
 
@@ -169,8 +177,10 @@ def search_news_references(query: str, locations: list, core_keywords: list, tar
         tier = 2
         if is_gov_or_factcheck:
             tier = 0
+            match_score += 15 # บูสต์คะแนนรัฐบาล
         elif any(wd in domain for wd in trusted_media):
             tier = 1
+            match_score += 5
 
         urls_seen.add(link)
         processed_results.append({
@@ -178,12 +188,14 @@ def search_news_references(query: str, locations: list, core_keywords: list, tar
             'href': link,
             'pub_date': pub_date[:10] if pub_date != "ไม่ระบุ" else pub_date, 
             'snippet': content,
-            'tier': tier
+            'tier': tier,
+            'match_score': match_score
         })
         
-    # จัดอันดับตามความน่าเชื่อถือของสื่อ (ข่าวทุกชิ้นที่รอดมาคือข่าวที่ตรงบริบท 100% แล้ว)
-    processed_results.sort(key=lambda x: x['tier'])
-    for r in processed_results: r.pop('tier', None)
+    # จัดอันดับด้วยคะแนน Score และ Tier เพื่อให้ข่าวรัฐและสื่อหลักขึ้นนำ
+    processed_results.sort(key=lambda x: (-x['match_score'], x['tier']))
+    for r in processed_results: 
+        r.pop('tier', None)
+        r.pop('match_score', None)
         
-    # ส่ง 10 ลิงก์ที่เจ๋งที่สุดให้ AI เปรียบเทียบเนื้อหาลึกๆ
     return processed_results[:num_results]

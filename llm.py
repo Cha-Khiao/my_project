@@ -93,7 +93,7 @@ def call_openrouter(prompt: str, system_msg: str) -> dict:
         return {}
 
 # =========================================================
-# ⚡ STEP 1: Search Planner
+# ⚡ STEP 1: Search Planner (บังคับสร้างคีย์เวิร์ดราชการ + แบนภาษาอื่น)
 # =========================================================
 def analyze_intent_and_plan_search(news_text: str) -> tuple:
     text_for_analysis = news_text
@@ -107,39 +107,50 @@ def analyze_intent_and_plan_search(news_text: str) -> tuple:
     prompt = f"""ข้อความที่ต้องการตรวจสอบ: 
 "{text_chunk}"
 
-หน้าที่: สกัด "ข้อมูลเพื่อนำไปคัดกรองข่าว" (Filter Parameters)
+หน้าที่: สกัด "ข้อมูลสำหรับค้นหา" (Optimized for Search Engine)
 กฎ:
-1. `search_query`: ประโยคค้นหาข่าว (ห้ามใส่เลขปีลงในประโยคนี้)
-2. `locations`: สกัด "สถานที่/จังหวัด"
-3. `core_keywords`: สกัดแก่นของเรื่อง 2-3 คำ
+1. `search_query`: สร้างกลุ่มคำสั้นๆ สำหรับสืบค้น (ห้ามแต่งเป็นประโยคยาว ห้ามใส่เลขปี)
+2. `locations`: สกัด "สถานที่" (ชื่อจังหวัด, อำเภอ) 
+3. `core_keywords`: ⚠️ สำคัญมาก! ให้ดึงแก่นเรื่อง และ **"แปลเป็นคำพ้องความหมายที่เป็นภาษาราชการ/ทางการ"** แนบมาด้วยเสมอ (เช่น ถ้าเจอคำว่า "สายไฟลงดิน" ให้ใส่ "สายไฟฟ้าใต้ดิน" หรือ "ระบบจำหน่ายไฟฟ้า" มาด้วย, ถ้าเจอ "แจกเงิน" ให้ใส่ "มาตรการกระตุ้นเศรษฐกิจ") รวม 3-5 คำ เพื่อให้ระบบหาเว็บหน่วยงานรัฐ (go.th) เจอ!
 4. `target_year`: สกัด "ปี พ.ศ." (ตัวเลข 4 หลัก) ถ้าไม่มีให้ใช้ '{current_year_th}'
 5. หากข้อความไม่มีเนื้อหาสาระ ให้ action = "DROP"
+
+⚠️ คำเตือนขั้นเด็ดขาด: ห้ามสร้างข้อความภาษาจีน (Chinese) หรือภาษาอื่นที่ไม่ใช่ภาษาไทยเด็ดขาด! ตอบกลับเป็นภาษาไทยและอังกฤษตามความจำเป็นเท่านั้น!
 
 ตอบกลับเป็น JSON รูปแบบนี้เท่านั้น:
 {{
     "action": "SEARCH หรือ DROP",
-    "search_query": "ประโยคค้นหา",
+    "search_query": "กลุ่มคำสั้นๆ",
     "locations": ["จังหวัด"],
-    "core_keywords": ["คำแก่นเรื่อง1", "คำพ้อง2"],
+    "core_keywords": ["คำพูดทั่วไป", "คำศัพท์ราชการ/ทางการ"],
     "target_year": "2569",
     "topic_summary": "สรุปประเด็นหลัก 1 ประโยค"
 }}"""
-    res_data = call_openrouter(prompt, "Extract strict filter parameters. Output strictly in JSON format in THAI.")
+    res_data = call_openrouter(prompt, "Extract SEO keywords including formal official synonyms for gov sites. STRICTLY THAI LANGUAGE ONLY. NO CHINESE ALLOWED. Output strictly in JSON format.")
     
-    action = res_data.get("action", "SEARCH").upper()
+    action = str(res_data.get("action", "SEARCH")).upper()
+    
     raw_query = res_data.get("search_query", text_chunk[:80])
+    if isinstance(raw_query, list):
+        raw_query = " ".join([str(q) for q in raw_query])
+    raw_query = str(raw_query)
+    
     clean_query = re.sub(r'(?i)(facebook|fb|twitter|x|tiktok|youtube|ข่าวล่าสุด|รัฐบาลไทย|\||\.\.\.)', '', raw_query).strip()
     
     locations = res_data.get("locations", [])
+    if isinstance(locations, str): locations = [locations]
+    
     core_keywords = res_data.get("core_keywords", [])
+    if isinstance(core_keywords, str): core_keywords = [core_keywords]
+        
     target_year = str(res_data.get("target_year", current_year_th)).strip()
-    topic_summary = res_data.get("topic_summary", "ประเมินและเปรียบเทียบข้อเท็จจริง")
+    topic_summary = str(res_data.get("topic_summary", "เปรียบเทียบและวิเคราะห์เนื้อหา")).strip()
     
     if action == "DROP": return "DROP", "", res_data.get("reason", "ไม่ใช่เนื้อหาที่สามารถเปรียบเทียบได้"), [], [], ""
     return "SEARCH", clean_query, topic_summary, locations, core_keywords, target_year
 
 # =========================================================
-# ⚖️ STEP 2: The Analyzer (ระบบเปรียบเทียบเนื้อหาที่ยุติธรรมที่สุด)
+# ⚖️ STEP 2: The Analyzer (กฎเหล็กแบนภาษาจีน)
 # =========================================================
 def analyze_news_with_qwen(news_text: str, references: list, current_date: str, source_url: str = "") -> dict:
     clean_claim = sanitize_for_api(news_text[:2000])
@@ -149,38 +160,37 @@ def analyze_news_with_qwen(news_text: str, references: list, current_date: str, 
     origin_info = f"ดึงมาจากเว็บไซต์ทางการ (Official Source): {source_url}" if is_official_source else "ข้อความทั่วไป / โซเชียลมีเดีย"
     current_time_context = get_current_thai_time()
 
-    # 💡 สอน AI ห้ามหักคะแนนถ้าผู้ใช้พูดกว้างๆ และต้องประเมินอย่างเป็นธรรม
     prompt = f"""คุณคือ AI ผู้เชี่ยวชาญด้านการวิเคราะห์และเปรียบเทียบเนื้อหาข่าว (Comparative Analyst)
 
 เวลาปัจจุบัน: {current_time_context}
 [ข้อความต้นฉบับ]: "{clean_claim}"
 [แหล่งที่มา]: {origin_info}
 
-[แหล่งข้อมูลอ้างอิงที่ระบบคัดกรองมาอย่างเข้มงวดแล้ว]:
+[แหล่งข้อมูลอ้างอิงที่ระบบคัดกรองมาให้]:
 {ref_text}
 
-กระบวนการเปรียบเทียบเนื้อหา (Fair Content Comparison):
-1. ⚖️ เปรียบเทียบความสอดคล้อง: ข้อความต้นฉบับสอดคล้องกับข่าวที่ระบบหามาได้หรือไม่?
-   - ⚠️ กฎความยุติธรรม: หากข้อความต้นฉบับอธิบายเรื่องแบบกว้างๆ (เช่น ระบุแค่จังหวัด) แต่แหล่งอ้างอิงระบุลึกถึงระดับหมู่บ้าน/ตำบล ให้ถือว่า "สอดคล้องกัน (Supported)" ห้ามมองว่าเป็นความขัดแย้ง และห้ามนำมาลดคะแนนเด็ดขาด!
-   - ❌ ความขัดแย้ง (Conflicting): คือข้อมูลที่สวนทางกันจริงๆ (เช่น ระบุปีผิด, หรือบอกว่างบ 10 ล้าน แต่ความจริง 100 ล้าน)
-2. 📌 relevant_ref_ids: ให้ดึงรหัสของแหล่งอ้างอิงที่รายงานเรื่องเดียวกันกับข้อความต้นฉบับ มาแสดงให้ผู้ใช้เห็นว่าเราเทียบกับอะไร
-3. 🏛️ น้ำหนักข้อมูล: หากแหล่งที่มาของข้อความคือ เว็บรัฐบาล (Official Source) ให้ประเมินว่ามีความน่าเชื่อถือสูงสุด (Score=5) เสมอ
+กระบวนการเปรียบเทียบเนื้อหา:
+1. ⚖️ เปรียบเทียบความสอดคล้อง: หากต้นฉบับพูดกว้างๆ แต่อ้างอิงระบุรายละเอียดราชการลึกกว่า ให้ถือว่า "สอดคล้องกัน" ห้ามมองว่าขัดแย้ง!
+2. 📌 relevant_ref_ids: ให้ดึงรหัสของแหล่งอ้างอิงที่รายงานเรื่องเดียวกันกับข้อความต้นฉบับ มาแสดงเพื่อเป็นหลักฐานอ้างอิง
+3. 🏛️ น้ำหนักข้อมูล: หากแหล่งที่มาคือ เว็บรัฐบาล (Official Source) ให้ประเมินว่ามีความน่าเชื่อถือสูงสุด
+
+⚠️ คำเตือนขั้นเด็ดขาด: ห้ามสร้างข้อความ หรือ Thought process เป็นภาษาจีน (Chinese) หรือภาษาอื่นที่ไม่ใช่ภาษาไทยเด็ดขาด! ตอบกลับเป็นภาษาไทยเท่านั้น!
 
 เกณฑ์คะแนน (ความสอดคล้อง): 
-5=เนื้อหาสอดคล้องกับสื่อหลักอย่างสมบูรณ์, 4=สอดคล้องส่วนใหญ่, 3=ก้ำกึ่ง/ไม่ชัดเจน, 2=พบการบิดเบือนข้อมูลจากสื่อหลัก, 1=ขัดแย้งอย่างสิ้นเชิง หรือไม่มีแหล่งอ้างอิงสอดคล้องเลย
+5=เนื้อหาสอดคล้อง 100%, 4=สอดคล้องส่วนใหญ่, 3=ก้ำกึ่ง, 2=พบการบิดเบือนข้อมูลจากสื่อหลัก, 1=ขัดแย้งอย่างสิ้นเชิง หรือไม่มีแหล่งอ้างอิงสอดคล้องเลย
 
 ตอบกลับเป็น JSON รูปแบบนี้เท่านั้น:
 {{
-    "thought": "เปรียบเทียบเนื้อหา หากต้นฉบับกว้างกว่าแหล่งอ้างอิงให้ถือว่าสอดคล้องกัน ห้ามหักคะแนน",
+    "thought": "คิดวิเคราะห์เป็นภาษาไทยเท่านั้น ห้ามใช้ภาษาจีน",
     "verdict_summary": "สรุปผลการเปรียบเทียบ 1 ประโยค",
     "supported_points": ["ประเด็นที่สอดคล้องกับแหล่งอ้างอิง"],
     "conflicting_points": ["ประเด็นที่ขัดแย้งอย่างชัดเจน (หากไม่มี ให้เว้นว่าง)"],
     "comparative_analysis": "อธิบายผลการเปรียบเทียบอย่างเป็นเหตุเป็นผล",
-    "relevant_ref_ids": [ระบุรหัสอ้างอิงของข่าวที่นำมาเปรียบเทียบและสอดคล้องกับเหตุการณ์],
+    "relevant_ref_ids": [ระบุรหัสอ้างอิงของข่าวที่เกี่ยวข้องจริงๆ],
     "score": ตัวเลข 1-5
 }}"""
     
-    final_result = call_openrouter(prompt, "You are a Comparative Analyst. Perform a FAIR comparison: DO NOT penalize the text if it lacks micro-details present in the references. Output strictly in JSON format in THAI.")
+    final_result = call_openrouter(prompt, "You are a Comparative Analyst. STRICTLY THAI LANGUAGE ONLY. DO NOT OUTPUT CHINESE CHARACTERS. Output strictly in JSON format in THAI.")
     if not final_result:
         return validate_ai_response({"comparative_analysis": "❌ ข้อผิดพลาด: AI ไม่สามารถประมวลผลการเปรียบเทียบได้"})
         
